@@ -7,6 +7,7 @@ import os
 import uuid
 import asyncio
 import websockets
+import numpy as np
 from typing import Optional, Tuple
 
 # ── Agent 1: SignatureAgent (Normalizer) ──────────────────────────────────────
@@ -53,6 +54,12 @@ class CacheAgent:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Check for embedding column and add it if missing (database schema migration)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(signature_cache)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if "embedding" not in columns:
+                conn.execute("ALTER TABLE signature_cache ADD COLUMN embedding BLOB")
             conn.commit()
 
     def get(self, signature: str) -> Optional[Tuple[str, str]]:
@@ -83,11 +90,12 @@ class CacheAgent:
                     results[sig] = (cat, subcat)
         return results
 
-    def set(self, signature: str, category: str, subcategory: str):
+    def set(self, signature: str, category: str, subcategory: str, embedding: Optional[np.ndarray] = None):
+        emb_blob = embedding.astype(np.float32).tobytes() if embedding is not None else None
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO signature_cache (signature, category, subcategory) VALUES (?, ?, ?)",
-                (signature, category, subcategory)
+                "INSERT OR REPLACE INTO signature_cache (signature, category, subcategory, embedding) VALUES (?, ?, ?, ?)",
+                (signature, category, subcategory, emb_blob)
             )
             conn.commit()
 
@@ -96,10 +104,138 @@ class CacheAgent:
             return
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany(
-                "INSERT OR REPLACE INTO signature_cache (signature, category, subcategory) VALUES (?, ?, ?)",
+                "INSERT OR REPLACE INTO signature_cache (signature, category, subcategory, embedding) VALUES (?, ?, ?, NULL)",
                 entries
             )
             conn.commit()
+
+    def load_all_embeddings(self) -> list[dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT signature, category, subcategory, embedding FROM signature_cache WHERE embedding IS NOT NULL")
+            rows = cursor.fetchall()
+            results = []
+            for sig, cat, subcat, emb_blob in rows:
+                if emb_blob:
+                    vec = np.frombuffer(emb_blob, dtype=np.float32)
+                    results.append({
+                        "signature": sig,
+                        "category": cat,
+                        "subcategory": subcat,
+                        "embedding": vec
+                    })
+            return results
+
+
+# ── Agent 4: EmbeddingAgent (fastembed BGE Model) ─────────────────────────────
+class EmbeddingAgent:
+    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
+        from fastembed import TextEmbedding
+        # Use a lightweight CPU-optimized embedding model:
+        # BAAI/bge-small-en-v1.5 produces 384-dimensional vectors.
+        # This is extremely fast and accurate on CPU.
+        self.model_name = model_name
+        self.model = TextEmbedding(model_name=model_name)
+
+    def get_embedding(self, text: str) -> np.ndarray:
+        embeddings = list(self.model.embed([text]))
+        return np.array(embeddings[0], dtype=np.float32)
+
+
+# ── Agent 5: SemanticCacheAgent (In-Memory Cosine Similarity) ────────────────
+class SemanticCacheAgent:
+    def __init__(self, cache_agent: CacheAgent, embedding_agent: EmbeddingAgent, similarity_threshold: float = 0.88):
+        self.cache_agent = cache_agent
+        self.embedding_agent = embedding_agent
+        self.similarity_threshold = similarity_threshold
+        
+        # In-memory arrays for fast cosine similarity scanning
+        self.signatures: list[str] = []
+        self.categories: list[str] = []
+        self.subcategories: list[str] = []
+        self.vectors: Optional[np.ndarray] = None  # 2D numpy array of shape (N, 384)
+        
+        self.load_cache()
+
+    def load_cache(self):
+        try:
+            records = self.cache_agent.load_all_embeddings()
+            if not records:
+                self.signatures = []
+                self.categories = []
+                self.subcategories = []
+                self.vectors = None
+                return
+
+            self.signatures = [r["signature"] for r in records]
+            self.categories = [r["category"] for r in records]
+            self.subcategories = [r["subcategory"] for r in records]
+            self.vectors = np.vstack([r["embedding"] for r in records])
+            print(f"[SemanticCache] Loaded {len(self.signatures)} semantic cache vectors into RAM.")
+        except Exception as e:
+            print(f"[SemanticCache] Error loading cache: {e}. Starting with empty semantic cache.")
+            self.signatures = []
+            self.categories = []
+            self.subcategories = []
+            self.vectors = None
+
+    def search(self, query_text: str, query_vector: Optional[np.ndarray] = None) -> Optional[Tuple[str, str, float]]:
+        """
+        Searches the in-memory semantic cache for the most similar log vector.
+        Returns (category, subcategory, similarity_score) if a match exceeds the threshold.
+        """
+        if self.vectors is None or len(self.signatures) == 0:
+            return None
+
+        try:
+            if query_vector is None:
+                query_vector = self.embedding_agent.get_embedding(query_text)
+
+            query_norm = np.linalg.norm(query_vector)
+            if query_norm == 0:
+                return None
+            
+            # Calculate Cosine Similarities: dot(A, B) / (norm(A) * norm(B))
+            dots = np.dot(self.vectors, query_vector)
+            norms = np.linalg.norm(self.vectors, axis=1)
+            
+            # Avoid division by zero
+            norms[norms == 0] = 1e-9
+            
+            similarities = dots / (norms * query_norm)
+            
+            # Find index of max similarity
+            best_idx = np.argmax(similarities)
+            best_score = float(similarities[best_idx])
+            
+            if best_score >= self.similarity_threshold:
+                return self.categories[best_idx], self.subcategories[best_idx], best_score
+        except Exception as e:
+            print(f"[SemanticCache] Search error: {e}")
+        
+        return None
+
+    def add(self, signature: str, embedding: np.ndarray, category: str, subcategory: str):
+        """Adds a new vector to the in-memory array and persists it to SQLite."""
+        try:
+            # Persist to database
+            self.cache_agent.set(signature, category, subcategory, embedding)
+            
+            # Append to in-memory lists
+            self.signatures.append(signature)
+            self.categories.append(category)
+            self.subcategories.append(subcategory)
+            
+            # Append to the vectors numpy array
+            reshaped_emb = embedding.reshape(1, -1)
+            if self.vectors is None:
+                self.vectors = reshaped_emb
+            else:
+                self.vectors = np.vstack([self.vectors, reshaped_emb])
+            
+            print(f"[SemanticCache] Added signature '{signature}' to semantic cache (total size: {len(self.signatures)}).")
+        except Exception as e:
+            print(f"[SemanticCache] Error adding vector: {e}")
 
 
 # ── Agent 3: DuoClassifierAgent (GitLab GraphQL aiAction) ─────────────────────

@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from agents import SignatureAgent, CacheAgent, DuoClassifierAgent
+from agents import SignatureAgent, CacheAgent, DuoClassifierAgent, EmbeddingAgent, SemanticCacheAgent
 
 app = FastAPI(title="GitLab Duo Log Categorizer Service")
 
@@ -16,6 +16,8 @@ if not GITLAB_TOKEN:
 signature_agent = SignatureAgent()
 cache_agent = CacheAgent()
 duo_agent = DuoClassifierAgent(gitlab_url=GITLAB_URL, gitlab_token=GITLAB_TOKEN)
+embedding_agent = EmbeddingAgent()
+semantic_cache_agent = SemanticCacheAgent(cache_agent, embedding_agent)
 
 # Pydantic schemas
 class ClassifyRequest(BaseModel):
@@ -46,7 +48,20 @@ async def classify_log(req: ClassifyRequest):
             cat, subcat = cached_result
             return ClassifyResponse(category=cat, subcategory=subcat, cached=True)
 
-        # Step 3: Run LLM classification (Agent 3)
+        # Step 3: Check Semantic Cache (Agent 5)
+        # Compute embedding first using normalized structural text + exception type for rich context
+        norm_msg = signature_agent.normalize(req.message)
+        norm_text = f"{req.exception_type}: {norm_msg}" if req.exception_type else norm_msg
+        query_emb = embedding_agent.get_embedding(norm_text)
+        semantic_match = semantic_cache_agent.search(norm_text, query_vector=query_emb)
+        if semantic_match:
+            cat, subcat, score = semantic_match
+            print(f"[classify] Semantic cache hit for '{req.message[:50]}...' with similarity {score:.4f}. Reusing category: {cat}/{subcat}")
+            # Cache this specific exact signature with the computed embedding to bypass vector computation next time
+            cache_agent.set(sig, cat, subcat, query_emb)
+            return ClassifyResponse(category=cat, subcategory=subcat, cached=True)
+
+        # Step 4: Run LLM classification (Agent 3)
         cat, subcat = duo_agent.classify(
             message=req.message,
             exception_type=req.exception_type,
@@ -54,8 +69,8 @@ async def classify_log(req: ClassifyRequest):
             severity=req.severity
         )
 
-        # Step 4: Write to SQLite cache (Agent 2)
-        cache_agent.set(sig, cat, subcat)
+        # Step 5: Write to SQLite + Semantic cache
+        semantic_cache_agent.add(sig, query_emb, cat, subcat)
 
         return ClassifyResponse(category=cat, subcategory=subcat, cached=False)
 
@@ -76,27 +91,46 @@ async def classify_logs_bulk(req: list[ClassifyRequest]):
         signatures.append(sig)
         signatures_map.append((item, sig))
 
-    # Step 2: Fetch all cached records in a single call
+    # Step 2: Fetch all cached records in a single call (exact cache)
     cached_map = cache_agent.get_bulk(signatures)
 
-    # Step 3: Deduplicate unique uncached signatures to avoid duplicate calls
-    uncached_signatures = set()
+    # Step 3: For uncached signatures, check the semantic cache
+    uncached_signatures = []
+    semantic_matches = {}
     for item, sig in signatures_map:
         if sig not in cached_map:
-            uncached_signatures.add(sig)
+            # Check if this signature is in our uncached list already to avoid duplicate embedding calculation
+            if sig not in semantic_matches and not any(s == sig for s, _, _ in uncached_signatures):
+                # Run semantic search
+                norm_msg = signature_agent.normalize(item.message)
+                norm_text = f"{item.exception_type}: {norm_msg}" if item.exception_type else norm_msg
+                query_emb = embedding_agent.get_embedding(norm_text)
+                match = semantic_cache_agent.search(norm_text, query_vector=query_emb)
+                if match:
+                    cat, subcat, score = match
+                    print(f"[classify/bulk] Semantic cache hit for '{item.message[:50]}...' (similarity {score:.4f})")
+                    semantic_matches[sig] = (cat, subcat, query_emb)
+                else:
+                    # Really uncached (needs GitLab Duo AI)
+                    uncached_signatures.append((sig, item, query_emb))
 
-    new_entries = []
+    # If any semantic matches were found, add them to cached_map (and persist exact mapping in DB)
+    for sig, (cat, subcat, query_emb) in semantic_matches.items():
+        cached_map[sig] = (cat, subcat)
+        # Store exact mapping in SQLite
+        cache_agent.set(sig, cat, subcat, query_emb)
+
+    # Step 4: Call GitLab Duo for the remaining truly uncached entries
     uncached_classifications = {}
     duo_calls_count = 0
     max_duo_calls = 10  # Production safety rate limit cap
 
-    for sig in uncached_signatures:
-        matching_item = next(item for item, s in signatures_map if s == sig)
-        
+    for sig, matching_item, query_emb in uncached_signatures:
         # If we have reached the safety cap of remote calls, use local classification for the remainder of this batch
         if duo_calls_count >= max_duo_calls:
             cat, subcat = duo_agent.classify_local(matching_item.message, matching_item.exception_type)
             uncached_classifications[sig] = (cat, subcat)
+            semantic_cache_agent.add(sig, query_emb, cat, subcat)
             continue
 
         try:
@@ -112,14 +146,12 @@ async def classify_logs_bulk(req: list[ClassifyRequest]):
                 duo_calls_count += 1
                 
             uncached_classifications[sig] = (cat, subcat)
-            new_entries.append((sig, cat, subcat))
+            # Add to both SQLite & Semantic cache in memory
+            semantic_cache_agent.add(sig, query_emb, cat, subcat)
         except Exception:
             cat, subcat = duo_agent.classify_local(matching_item.message, matching_item.exception_type)
             uncached_classifications[sig] = (cat, subcat)
-
-    # Step 4: Save new entries in bulk
-    if new_entries:
-        cache_agent.set_bulk(new_entries)
+            semantic_cache_agent.add(sig, query_emb, cat, subcat)
 
     # Step 5: Assemble results in original order
     results = []
@@ -212,6 +244,8 @@ async def status():
         "authenticated_user_id": user_id if token_valid else None,
         "duo_runtime_disabled": duo_agent.use_local_only,
         "cached_signatures": cached_count,
+        "semantic_cache_size": len(semantic_cache_agent.signatures),
+        "embedding_model_active": embedding_agent.model_name,
         "error": error_detail,
     }
 
@@ -220,32 +254,53 @@ async def status():
 async def test_classify(req: ClassifyRequest):
     """
     Run a single log through the full pipeline and return the result
-    along with which source was used (gitlab_duo or local_fallback).
-    Useful for verifying GitLab Duo is actually being called.
+    along with which source was used (sqlite_cache, semantic_cache, gitlab_duo_graphql, or local_fallback).
+    Useful for verifying vector embeddings are working.
     """
     import time
 
+    start = time.time()
     sig = signature_agent.get_signature(
         message=req.message,
         exception_type=req.exception_type,
         app_name=req.application_name
     )
 
-    # Check cache first
+    # 1. Check exact cache first
     cached = cache_agent.get(sig)
     if cached:
         cat, subcat = cached
+        elapsed = round(time.time() - start, 4)
         return {
             "category": cat,
             "subcategory": subcat,
             "source": "sqlite_cache",
             "signature": sig,
-            "note": "Result was already cached — delete categorizer_cache.db to force a fresh AI call."
+            "elapsed_seconds": elapsed,
+            "note": "Result was already cached exactly — delete database to force a fresh AI call."
         }
 
-    # Try GitLab Duo
-    start = time.time()
-    used_duo = False
+    # 2. Check semantic cache
+    norm_msg = signature_agent.normalize(req.message)
+    norm_text = f"{req.exception_type}: {norm_msg}" if req.exception_type else norm_msg
+    query_emb = embedding_agent.get_embedding(norm_text)
+    semantic_match = semantic_cache_agent.search(norm_text, query_vector=query_emb)
+    if semantic_match:
+        cat, subcat, score = semantic_match
+        # Save signature to exact cache for next time
+        cache_agent.set(sig, cat, subcat, query_emb)
+        elapsed = round(time.time() - start, 4)
+        return {
+            "category": cat,
+            "subcategory": subcat,
+            "source": "semantic_cache",
+            "similarity_score": round(score, 4),
+            "signature": sig,
+            "elapsed_seconds": elapsed,
+            "note": f"✅ Semantic cache hit (similarity: {score:.4f}). Reused cached classification."
+        }
+
+    # 3. Try GitLab Duo
     try:
         if not duo_agent.use_local_only and duo_agent.gitlab_token and len(duo_agent.gitlab_token) >= 10:
             import asyncio
@@ -257,24 +312,24 @@ async def test_classify(req: ClassifyRequest):
             )
             if result:
                 cat, subcat = result
-                used_duo = True
-                cache_agent.set(sig, cat, subcat)
-                elapsed = round(time.time() - start, 2)
+                # Add to SQLite and memory semantic cache
+                semantic_cache_agent.add(sig, query_emb, cat, subcat)
+                elapsed = round(time.time() - start, 4)
                 return {
                     "category": cat,
                     "subcategory": subcat,
                     "source": "gitlab_duo_graphql",
                     "signature": sig,
                     "elapsed_seconds": elapsed,
-                    "note": "✅ GitLab Duo AI was called successfully."
+                    "note": "✅ GitLab Duo AI was called successfully and result was cached."
                 }
     except Exception as e:
         pass
 
-    # Fallback
+    # 4. Fallback
     cat, subcat = duo_agent.classify_local(req.message, req.exception_type)
-    cache_agent.set(sig, cat, subcat)
-    elapsed = round(time.time() - start, 2)
+    semantic_cache_agent.add(sig, query_emb, cat, subcat)
+    elapsed = round(time.time() - start, 4)
     return {
         "category": cat,
         "subcategory": subcat,
