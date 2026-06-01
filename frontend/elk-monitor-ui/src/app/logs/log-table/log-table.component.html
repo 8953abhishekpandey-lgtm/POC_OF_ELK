@@ -1,0 +1,299 @@
+<div class="logs-page">
+  <header class="page-header">
+    <div class="header-left">
+      <h1 class="page-title">Log Explorer</h1>
+      <p class="page-subtitle">Browse and filter ERROR &amp; FATAL logs</p>
+    </div>
+    <a routerLink="/dashboard" class="btn-back">← Dashboard</a>
+  </header>
+
+  <!-- Filters -->
+  <section class="filter-panel card">
+    <div class="filter-grid">
+      <div class="filter-group">
+        <label>Severity</label>
+        <select [(ngModel)]="filter.severity" id="severity-filter">
+          <option value="">All (ERROR + FATAL)</option>
+          <option value="ERROR">ERROR only</option>
+          <option value="FATAL">FATAL only</option>
+        </select>
+      </div>
+
+      <div class="filter-group">
+        <label>Application</label>
+        <select [(ngModel)]="filter.applicationName" id="app-filter">
+          <option value="">All Applications</option>
+          <option *ngFor="let app of apps" [value]="app">{{ toFriendlyAppName(app) }}</option>
+        </select>
+      </div>
+
+      <div class="filter-group">
+        <label>Server</label>
+        <select [(ngModel)]="filter.serverName" id="server-filter">
+          <option value="">All Servers</option>
+          <option *ngFor="let srv of servers" [value]="srv">{{ srv }}</option>
+        </select>
+      </div>
+
+      <div class="filter-group">
+        <label>Category</label>
+        <select [(ngModel)]="filter.category" id="category-filter">
+          <option *ngFor="let category of categories" [value]="category">
+            {{ category || 'All Categories' }}
+          </option>
+        </select>
+      </div>
+
+      <div class="filter-group">
+        <label>Error Type</label>
+        <select [(ngModel)]="filter.exceptionType" id="exception-filter">
+          <option value="">All Error Types</option>
+          <option *ngFor="let type of exceptionTypes" [value]="type">
+            {{ type }}
+          </option>
+        </select>
+      </div>
+
+      <div class="filter-group">
+        <label>Date From</label>
+        <input type="datetime-local" [(ngModel)]="filter.dateFrom" id="date-from" />
+      </div>
+
+      <div class="filter-group">
+        <div class="date-header">
+          <label>Date To</label>
+          <div class="quick-ranges">
+            <button type="button" class="btn-quick" (click)="setTimeRange('1h')" title="Last 1 Hour">1h</button>
+            <button type="button" class="btn-quick" (click)="setTimeRange('10h')" title="Last 10 Hours">10h</button>
+            <button type="button" class="btn-quick" (click)="setTimeRange('24h')" title="Last 24 Hours">24h</button>
+            <button type="button" class="btn-quick" (click)="setTimeRange('2d')" title="Last 2 Days">2d</button>
+            <button type="button" class="btn-quick" (click)="setTimeRange('7d')" title="Last 7 Days">7d</button>
+          </div>
+        </div>
+        <input type="datetime-local" [(ngModel)]="filter.dateTo" id="date-to" />
+      </div>
+
+      <div class="filter-group">
+        <label>Search Text</label>
+        <input type="text" [(ngModel)]="filter.searchText" id="search-text"
+               placeholder="Search in messages..." (keydown.enter)="applyFilters()" />
+      </div>
+    </div>
+    <div class="filter-actions">
+      <button class="btn-apply" (click)="applyFilters()">🔍 Apply Filters</button>
+      <button class="btn-reset" (click)="resetFilters()">✕ Reset</button>
+      <span class="result-count" *ngIf="pagedResult">
+        {{ pagedResult.total | number }} logs found
+      </span>
+    </div>
+  </section>
+
+  <!-- Loading -->
+  <div class="loading-spinner" *ngIf="loading">
+    <div class="loader-ring"></div>
+    <p>Fetching logs...</p>
+  </div>
+
+  <!-- Error -->
+  <div class="error-banner" *ngIf="error && !loading">
+    <span>⚠️</span> {{ error }}
+    <button (click)="loadLogs()">Retry</button>
+  </div>
+
+  <!-- Table -->
+  <section class="card table-card" *ngIf="!loading && !error">
+    <div class="table-scroll">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Severity</th>
+            <th>Application</th>
+            <th>Server</th>
+            <th>Category</th>
+            <th>Subcategory</th>
+            <th>Signature</th>
+            <th>Error Message</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let log of logs" (click)="openDetail(log)" class="log-row">
+            <td class="time-cell">{{ log.timestamp | date:'MMM d, HH:mm:ss' }}</td>
+            <td>
+              <span class="severity-badge" [class]="getSeverityClass(log.severity)">
+                {{ log.severity }}
+              </span>
+            </td>
+            <td><span class="app-chip">{{ log.applicationName }}</span></td>
+            <td class="server-cell">{{ log.serverName }}</td>
+            <td>
+              <span class="category-chip" [style.border-color]="log.categoryColor">
+                {{ log.category }}
+              </span>
+            </td>
+            <td><span class="subcategory-chip">{{ log.subcategory }}</span></td>
+            <td><span class="signature-cell">{{ log.errorSignature }}</span></td>
+            <td class="message-cell">
+              {{ log.errorMessage | slice:0:100 }}{{ log.errorMessage.length > 100 ? '...' : '' }}
+            </td>
+            <td>
+              <button class="btn-detail" (click)="$event.stopPropagation(); openDetail(log)">Details</button>
+            </td>
+          </tr>
+          <tr *ngIf="logs.length === 0">
+            <td colspan="9" class="empty-state">
+              <div>
+                <div style="font-size: 2rem">📭</div>
+                <p>No logs found with current filters</p>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Pagination -->
+    <div class="pagination" *ngIf="pagedResult && pagedResult.totalPages > 1">
+      <button class="page-btn" (click)="goToPage(1)" [disabled]="filter.page === 1">«</button>
+      <button class="page-btn" (click)="goToPage((filter.page ?? 1) - 1)" [disabled]="filter.page === 1">‹</button>
+      <button *ngFor="let p of getPages()"
+              class="page-btn"
+              [class.active]="p === filter.page"
+              (click)="goToPage(p)">{{ p }}</button>
+      <button class="page-btn" (click)="goToPage((filter.page ?? 1) + 1)" [disabled]="filter.page === pagedResult.totalPages">›</button>
+      <button class="page-btn" (click)="goToPage(pagedResult.totalPages)" [disabled]="filter.page === pagedResult.totalPages">»</button>
+      <span class="page-info">
+        Page {{ filter.page }} of {{ pagedResult.totalPages }}
+        ({{ pagedResult.total | number }} total)
+      </span>
+    </div>
+  </section>
+
+  <!-- Detail Modal -->
+  <div class="modal-backdrop" *ngIf="selectedLog" (click)="closeDetail()">
+    <div class="modal-panel" (click)="$event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title-row">
+          <span class="severity-badge" [class]="getSeverityClass(selectedLog.severity)">
+            {{ selectedLog.severity }}
+          </span>
+          <span class="category-chip" [style.border-color]="selectedLog.categoryColor">
+            {{ selectedLog.category }}
+          </span>
+          <h2>Log Detail</h2>
+        </div>
+        <button class="modal-close" (click)="closeDetail()">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="detail-grid">
+          <div class="detail-field">
+            <label>Timestamp</label>
+            <span class="detail-value">{{ selectedLog.timestamp | date:'full' }}</span>
+          </div>
+          <div class="detail-field">
+            <label>Application</label>
+            <span class="detail-value">{{ selectedLog.applicationName }}</span>
+          </div>
+          <div class="detail-field">
+            <label>Server</label>
+            <span class="detail-value">{{ selectedLog.serverName }}</span>
+          </div>
+          <div class="detail-field">
+            <label>Environment</label>
+            <span class="detail-value">{{ selectedLog.environment }}</span>
+          </div>
+          <div class="detail-field">
+            <label>Logger</label>
+            <span class="detail-value">{{ selectedLog.logger || '—' }}</span>
+          </div>
+          <div class="detail-field">
+            <label>Exception Type</label>
+            <span class="detail-value exception-type">{{ selectedLog.exceptionType || '—' }}</span>
+          </div>
+          <div class="detail-field">
+            <label>Subcategory</label>
+            <span class="detail-value">{{ selectedLog.subcategory || '—' }}</span>
+          </div>
+          <div class="detail-field">
+            <label>Error Signature</label>
+            <span class="detail-value exception-type">{{ selectedLog.errorSignature || '—' }}</span>
+          </div>
+        </div>
+
+
+        <div class="detail-section">
+          <label>Error Message</label>
+          <pre class="code-block message-block">{{ selectedLog.errorMessage }}</pre>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedLog.normalizedMessage">
+          <label>Normalized Message</label>
+          <pre class="code-block">{{ selectedLog.normalizedMessage }}</pre>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedLog.stackTrace">
+          <label>Stack Trace</label>
+          <pre class="code-block stacktrace-block">{{ selectedLog.stackTrace }}</pre>
+        </div>
+
+        <!-- ─── Full Error Context ─────────────────────────────────────── -->
+        <div class="context-section">
+          <div class="context-header">
+            <div class="context-header-left">
+              <span class="context-icon">🔍</span>
+              <span class="context-title">Full Error Context</span>
+              <span class="context-subtitle">Adjacent log lines from the same file (±5 s)</span>
+            </div>
+            <button
+              class="btn-context"
+              (click)="fetchContext()"
+              [disabled]="contextLoading"
+              id="btn-view-full-context">
+              <span *ngIf="!contextLoading">📋 View Full Error</span>
+              <span *ngIf="contextLoading" class="spinner-inline">⏳ Loading…</span>
+            </button>
+          </div>
+
+          <div *ngIf="showContext">
+            <!-- Loading state -->
+            <div class="context-loading" *ngIf="contextLoading">
+              <div class="loader-ring-sm"></div>
+              <span>Fetching adjacent lines from Elasticsearch…</span>
+            </div>
+
+            <!-- Error state -->
+            <div class="context-info-banner context-info-warn" *ngIf="contextError && !contextLoading">
+              ⚠️ {{ contextError }}
+              <p class="context-hint">
+                This log was shipped by Filebeat one line at a time. If the log file path is not stored
+                in Elasticsearch, context cannot be retrieved here — configure Filebeat multiline settings
+                on the server to permanently fix this.
+              </p>
+            </div>
+
+            <!-- Results -->
+            <div class="context-lines" *ngIf="!contextLoading && contextLines.length > 0">
+              <div class="context-info-banner context-info-ok">
+                ✅ Found {{ contextLines.length }} adjacent lines — this is the <strong>complete error</strong>:
+              </div>
+              <div class="context-line"
+                   *ngFor="let line of contextLines"
+                   [class.context-line-highlight]="line.message === selectedLog!.errorMessage">
+                <span class="context-ts">{{ line.timestamp | date:'HH:mm:ss.SSS' }}</span>
+                <span class="context-badge" [class]="line.level === 'FATAL' ? 'badge-fatal' : 'badge-error'">
+                  {{ line.level }}
+                </span>
+                <span class="context-msg">{{ line.message }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- ───────────────────────────────────────────────────────────── -->
+
+      </div>
+    </div>
+  </div>
+</div>
+

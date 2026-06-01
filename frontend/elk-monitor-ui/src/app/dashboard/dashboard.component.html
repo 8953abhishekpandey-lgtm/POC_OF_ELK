@@ -1,0 +1,251 @@
+<div class="dashboard-page">
+  <!-- Header -->
+  <header class="page-header">
+    <div class="header-left">
+      <h1 class="page-title">Error Monitor Dashboard</h1>
+      <p class="page-subtitle">Real-time ERROR &amp; FATAL log intelligence</p>
+    </div>
+    <div class="header-right">
+      <span class="last-refresh">Last updated: {{ lastRefresh | date:'HH:mm:ss' }}</span>
+      <button class="btn-refresh" (click)="loadData()" [disabled]="loading">
+        <span [class.spinning]="loading">↻</span> Refresh
+      </button>
+      <a routerLink="/logs" class="btn-explore">Log Explorer →</a>
+    </div>
+  </header>
+
+  <!-- Loading State -->
+  <div class="loading-overlay" *ngIf="loading">
+    <div class="loader-ring"></div>
+    <p>Loading from Elasticsearch...</p>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-banner" *ngIf="error && !loading">
+    <span class="error-icon">⚠️</span>
+    <div>
+      <strong>Connection Error</strong>
+      <p>{{ error }}</p>
+    </div>
+    <button (click)="loadData()">Retry</button>
+  </div>
+
+  <ng-container *ngIf="!loading && !error">
+    <!-- Summary Cards -->
+    <section class="summary-cards">
+      <div class="card metric-card card-errors">
+        <div class="card-icon">🔴</div>
+        <div class="card-body">
+          <div class="card-value">{{ summary?.totalErrors | number }}</div>
+          <div class="card-label">Total Errors</div>
+        </div>
+        <div class="card-sparkline">
+          <div class="sparkline-bar" style="height: 60%"></div>
+          <div class="sparkline-bar" style="height: 80%"></div>
+          <div class="sparkline-bar" style="height: 45%"></div>
+          <div class="sparkline-bar" style="height: 90%"></div>
+          <div class="sparkline-bar" style="height: 100%"></div>
+        </div>
+      </div>
+
+      <div class="card metric-card card-fatals">
+        <div class="card-icon">💀</div>
+        <div class="card-body">
+          <div class="card-value">{{ summary?.totalFatals | number }}</div>
+          <div class="card-label">Fatal Errors</div>
+        </div>
+        <div class="trend-badge" [class]="getTrendClass()">
+          {{ getTrendIcon() }} 7-day trend
+        </div>
+      </div>
+
+      <div class="card metric-card card-apps">
+        <div class="card-icon">🧩</div>
+        <div class="card-body">
+          <div class="card-value">{{ summary?.totalApplications }}</div>
+          <div class="card-label">Applications</div>
+        </div>
+        <div class="card-sub">Monitored services</div>
+      </div>
+
+      <div class="card metric-card card-servers">
+        <div class="card-icon">🖥️</div>
+        <div class="card-body">
+          <div class="card-value">{{ summary?.totalServers }}</div>
+          <div class="card-label">Servers</div>
+        </div>
+        <div class="card-sub">Active hosts</div>
+      </div>
+
+      <div class="card metric-card card-today">
+        <div class="card-icon">📅</div>
+        <div class="card-body">
+          <div class="card-value">{{ summary?.errorsLast24Hours | number }}</div>
+          <div class="card-label">Last 24 Hours</div>
+        </div>
+        <div class="card-sub">{{ summary?.errorsLast7Days | number }} last 7 days</div>
+      </div>
+    </section>
+
+    <!-- Charts Row 1: Timeline + Category Doughnut -->
+    <section class="charts-row">
+      <div class="card chart-card chart-wide">
+        <div class="chart-header">
+          <h3>Errors Over Time</h3>
+          <span class="chart-badge">Hourly</span>
+        </div>
+        <div class="chart-body">
+          <canvas baseChart
+            [data]="timelineData"
+            [options]="timelineOptions"
+            type="line">
+          </canvas>
+        </div>
+      </div>
+
+      <div class="card chart-card chart-narrow">
+        <div class="chart-header">
+          <h3>Error Categories</h3>
+          <span class="chart-badge">Distribution</span>
+        </div>
+        <div class="chart-body">
+          <canvas baseChart
+            [data]="doughnutData"
+            [options]="doughnutOptions"
+            type="doughnut">
+          </canvas>
+        </div>
+        <!-- Category legend -->
+        <div class="category-legend">
+          <div class="legend-item" *ngFor="let cat of charts?.categoryDistribution" [title]="cat.category + ': ' + cat.count + ' Total (' + cat.errorCount + ' Errors, ' + cat.fatalCount + ' Fatals)'">
+            <span class="legend-dot" [style.background]="cat.color"></span>
+            <span class="legend-label">{{ cat.category }}</span>
+            <div class="legend-breakdown">
+              <span class="legend-count total">{{ cat.count }}</span>
+              <span class="legend-count error" *ngIf="cat.errorCount > 0">{{ cat.errorCount }} E</span>
+              <span class="legend-count fatal" *ngIf="cat.fatalCount > 0">{{ cat.fatalCount }} F</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Charts Row 2: App bar + Server bar -->
+    <section class="charts-row">
+      <div class="card chart-card">
+        <div class="chart-header">
+          <h3>Errors by Application</h3>
+          <span class="chart-badge">Top {{ charts?.errorsByApplication?.length }}</span>
+        </div>
+        <div class="chart-body">
+          <canvas baseChart
+            [data]="appBarData"
+            [options]="appBarOptions"
+            type="bar">
+          </canvas>
+        </div>
+      </div>
+
+      <div class="card chart-card">
+        <div class="chart-header">
+          <h3>Server Distribution</h3>
+          <span class="chart-badge">By Host</span>
+        </div>
+        <div class="chart-body">
+          <canvas baseChart
+            [data]="serverBarData"
+            [options]="serverBarOptions"
+            type="bar">
+          </canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Recent Logs Table -->
+    <section class="card table-card">
+      <div class="chart-header">
+        <h3>Recent ERROR/FATAL Logs</h3>
+        <a routerLink="/logs" class="chart-badge table-link">Explore</a>
+      </div>
+      <div class="table-scroll">
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Severity</th>
+              <th>Application</th>
+              <th>Server</th>
+              <th>Category</th>
+              <th>Subcategory</th>
+              <th>Signature</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let log of recentLogs">
+              <td class="time-cell">{{ log.timestamp | date:'MMM d, HH:mm' }}</td>
+              <td>
+                <span class="severity-badge" [class]="getSeverityClass(log.severity)">
+                  {{ log.severity }}
+                </span>
+              </td>
+              <td><span class="app-badge">{{ log.applicationName }}</span></td>
+              <td class="time-cell">{{ log.serverName }}</td>
+              <td>
+                <span class="category-tag" [style.border-color]="log.categoryColor">
+                  {{ log.category }}
+                </span>
+              </td>
+              <td><span class="subcategory-tag">{{ log.subcategory }}</span></td>
+              <td><span class="signature-cell">{{ log.errorSignature }}</span></td>
+              <td class="message-cell" [title]="log.errorMessage">
+                {{ log.errorMessage | slice:0:90 }}{{ log.errorMessage.length > 90 ? '...' : '' }}
+              </td>
+            </tr>
+            <tr *ngIf="recentLogs.length === 0">
+              <td colspan="8" class="empty-cell">No recent ERROR/FATAL logs found.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Top Errors Table -->
+    <section class="card table-card">
+      <div class="chart-header">
+        <h3>Top Frequent Errors</h3>
+        <a routerLink="/logs" class="chart-badge table-link">View All</a>
+      </div>
+      <div class="table-scroll">
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Error Message</th>
+              <th>Application</th>
+              <th>Category</th>
+              <th>Subcategory</th>
+              <th>D-1</th>
+              <th>Count</th>
+              <th>Last Seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let err of charts?.topErrors; let i = index">
+              <td class="rank-cell">{{ i + 1 }}</td>
+              <td class="message-cell" [title]="err.errorMessage">
+                {{ err.errorMessage | slice:0:80 }}{{ err.errorMessage.length > 80 ? '...' : '' }}
+              </td>
+              <td><span class="app-badge">{{ err.applicationName }}</span></td>
+              <td><span class="category-tag">{{ err.category }}</span></td>
+              <td><span class="subcategory-tag">{{ err.subcategory }}</span></td>
+              <td class="time-cell">{{ err.d1Delta >= 0 ? '+' : '' }}{{ err.d1Delta }}</td>
+              <td><span class="count-badge">{{ err.count }}</span></td>
+              <td class="time-cell">{{ err.lastOccurrence | date:'MMM d, HH:mm' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </ng-container>
+</div>

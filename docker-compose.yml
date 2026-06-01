@@ -1,0 +1,67 @@
+# ── Uses your EXISTING Elasticsearch & Kibana at 10.0.0.28 ────────────────────
+# ES:     http://10.0.0.28:9200   (username: elastic, password: 4UZDzloH3b9glRyJqSp5)
+# Kibana: http://10.0.0.28:5601
+#
+# Only starts the .NET API + Angular frontend.
+# Run from the directory:  d:\POC_OF_ELK
+#   docker compose up -d
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── .NET 8 Backend API ─────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: elk-monitor-backend
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Docker
+      - Elasticsearch__Url=${ELASTICSEARCH_URL:-http://10.0.0.28:9200}
+      - Elasticsearch__Username=${ELASTICSEARCH_USERNAME:-}
+      - Elasticsearch__Password=${ELASTICSEARCH_PASSWORD:-}
+      - Elasticsearch__ApiKey=${ELASTICSEARCH_API_KEY:-}
+      - Elasticsearch__IndexPattern=${ELASTICSEARCH_INDEX_PATTERN:-filebeat-*-error,logs-mock-*}
+      - Elasticsearch__VerifySsl=${ELASTICSEARCH_VERIFY_SSL:-false}
+      - Elasticsearch__RequestTimeoutSeconds=${ELASTICSEARCH_REQUEST_TIMEOUT_SECONDS:-30}
+    ports:
+      - "5000:8080"
+    depends_on:
+      - categorizer
+    networks:
+      - elk-net
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ── Python Dynamic Categorizer (GitLab Duo REST API) ───────────────────────
+  categorizer:
+    build:
+      context: ./categorizer
+      dockerfile: Dockerfile
+    container_name: elk-monitor-categorizer
+    environment:
+      - GITLAB_URL=${GITLAB_URL:-https://gitlab.com}
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+    ports:
+      - "8000:8000"
+    networks:
+      - elk-net
+    restart: unless-stopped
+
+  # ── Angular Frontend (nginx) ───────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend/elk-monitor-ui
+      dockerfile: Dockerfile
+    container_name: elk-monitor-frontend
+    ports:
+      - "4200:80"
+    depends_on:
+      - backend
+    networks:
+      - elk-net
+    restart: unless-stopped
+
+networks:
+  elk-net:
+    driver: bridge

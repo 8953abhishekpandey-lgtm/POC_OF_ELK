@@ -1,0 +1,112 @@
+# ==========================================
+# Root .gitignore for ELK Monitor POC
+# Includes: .NET Core, Python, Angular, Docker, IDEs
+# ==========================================
+
+# Environment Secrets & Local Configs
+.env
+.env.local
+*.local
+.env.*.local
+
+# Python / Categorizer
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.venv
+venv
+ENV
+env/
+categorizer/categorizer_cache.db
+categorizer_cache.db
+*.db
+*.sqlite
+*.sqlite3
+
+# .NET / Backend (C#)
+**/[Bb]in/
+**/[Oo]bj/
+**/[Log]/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.mono
+*.saved
+*.lock.json
+*.nuget.props
+*.nuget.targets
+project.lock.json
+.vsconfig
+
+# Frontend (Angular / Node)
+node_modules/
+**/node_modules/
+**/dist/
+**/.angular/
+dist/
+tmp/
+out-tsc/
+bazel-out/
+/.angular/cache
+.sass-cache/
+/connect.lock
+/coverage
+/libpeerconnection.log
+testem.log
+/typings
+__screenshots__/
+
+# Logs & Diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDEs & Editors
+.idea/
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/mcp.json
+.history/*
