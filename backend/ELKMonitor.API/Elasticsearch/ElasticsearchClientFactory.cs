@@ -47,7 +47,22 @@ namespace ELKMonitor.API.Elasticsearch
             clientSettings
                 .RequestTimeout(TimeSpan.FromSeconds(settings.RequestTimeoutSeconds))
                 .EnableDebugMode()
-                .PrettyJson();
+                .PrettyJson()
+                .OnRequestCompleted(apiCallDetails =>
+                {
+                    if (apiCallDetails.RequestBodyInBytes != null)
+                    {
+                        var requestBody = System.Text.Encoding.UTF8.GetString(apiCallDetails.RequestBodyInBytes);
+                        Console.WriteLine($"Elasticsearch Request JSON:\n{requestBody}");
+                    }
+                    if (apiCallDetails.ResponseBodyInBytes != null)
+                    {
+                        var responseBody = System.Text.Encoding.UTF8.GetString(apiCallDetails.ResponseBodyInBytes);
+                        if (responseBody.Length > 1000)
+                            responseBody = responseBody.Substring(0, 1000) + "...[TRUNCATED]";
+                        Console.WriteLine($"Elasticsearch Response JSON:\n{responseBody}");
+                    }
+                });
 
             // Disable SSL verification for local dev (never use in production)
             if (!settings.VerifySsl)

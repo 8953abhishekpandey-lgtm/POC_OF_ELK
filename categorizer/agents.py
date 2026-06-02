@@ -253,6 +253,7 @@ class DuoClassifierAgent:
 
         return self.classify_local(message, exception_type)
 
+
     # ── Step 1: Get current user's GitLab global ID ─────────────────────────
     def _get_user_id(self) -> Optional[str]:
         if self._user_id:

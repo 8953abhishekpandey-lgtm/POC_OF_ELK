@@ -19,6 +19,7 @@ export class LogTableComponent implements OnInit {
   error: string | null = null;
   selectedLog: LogEntry | null = null;
 
+
   // Context viewer state
   contextLines: { timestamp: string; message: string; level: string }[] = [];
   allContextLines: { timestamp: string; message: string; level: string }[] = [];
@@ -54,6 +55,10 @@ export class LogTableComponent implements OnInit {
   constructor(private logService: LogService) {}
 
   ngOnInit(): void {
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    this.filter.dateFrom = this.formatLocalDate(yesterday);
+
     this.loadFilterOptions();
     this.loadLogs();
   }
@@ -93,7 +98,15 @@ export class LogTableComponent implements OnInit {
   }
 
   resetFilters(): void {
-    this.filter = { page: 1, pageSize: 25, severity: '', exceptionType: '' };
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    this.filter = {
+      page: 1,
+      pageSize: 25,
+      severity: '',
+      exceptionType: '',
+      dateFrom: this.formatLocalDate(yesterday)
+    };
     this.loadLogs();
   }
 

@@ -154,12 +154,42 @@ export class LogService {
     return this.http.get<string[]>(`${this.api}/logs/exception-types`);
   }
 
-  getDashboardSummary(): Observable<DashboardSummary> {
-    return this.http.get<DashboardSummary>(`${this.api}/dashboard/summary`);
+  getDashboardSummary(filter: LogFilter = {}): Observable<DashboardSummary> {
+    let params = new HttpParams();
+    if (filter.serverName) params = params.set('serverName', filter.serverName);
+    if (filter.applicationName) params = params.set('applicationName', filter.applicationName);
+    if (filter.dateFrom) {
+      const d = new Date(filter.dateFrom);
+      if (!isNaN(d.getTime())) params = params.set('dateFrom', d.toISOString());
+    }
+    if (filter.dateTo) {
+      const d = new Date(filter.dateTo);
+      if (!isNaN(d.getTime())) params = params.set('dateTo', d.toISOString());
+    }
+    if (filter.severity) params = params.set('severity', filter.severity);
+    if (filter.category) params = params.set('category', filter.category);
+    if (filter.exceptionType) params = params.set('exceptionType', filter.exceptionType);
+    if (filter.searchText) params = params.set('searchText', filter.searchText);
+    return this.http.get<DashboardSummary>(`${this.api}/dashboard/summary`, { params });
   }
 
-  getDashboardCharts(): Observable<DashboardCharts> {
-    return this.http.get<DashboardCharts>(`${this.api}/dashboard/charts`);
+  getDashboardCharts(filter: LogFilter = {}): Observable<DashboardCharts> {
+    let params = new HttpParams();
+    if (filter.serverName) params = params.set('serverName', filter.serverName);
+    if (filter.applicationName) params = params.set('applicationName', filter.applicationName);
+    if (filter.dateFrom) {
+      const d = new Date(filter.dateFrom);
+      if (!isNaN(d.getTime())) params = params.set('dateFrom', d.toISOString());
+    }
+    if (filter.dateTo) {
+      const d = new Date(filter.dateTo);
+      if (!isNaN(d.getTime())) params = params.set('dateTo', d.toISOString());
+    }
+    if (filter.severity) params = params.set('severity', filter.severity);
+    if (filter.category) params = params.set('category', filter.category);
+    if (filter.exceptionType) params = params.set('exceptionType', filter.exceptionType);
+    if (filter.searchText) params = params.set('searchText', filter.searchText);
+    return this.http.get<DashboardCharts>(`${this.api}/dashboard/charts`, { params });
   }
 
   getTopErrors(): Observable<TopError[]> {
@@ -180,4 +210,6 @@ export class LogService {
       `${this.api}/logs/context`, { params }
     );
   }
+
+
 }

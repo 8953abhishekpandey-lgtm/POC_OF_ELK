@@ -3,7 +3,7 @@
   <header class="page-header">
     <div class="header-left">
       <h1 class="page-title">Error Monitor Dashboard</h1>
-      <p class="page-subtitle">Real-time ERROR &amp; FATAL log intelligence</p>
+      <p class="page-subtitle">Real-time ERROR &amp; FATAL log intelligence (Past 24 Hours — D-1 Days window)</p>
     </div>
     <div class="header-right">
       <span class="last-refresh">Last updated: {{ lastRefresh | date:'HH:mm:ss' }}</span>
@@ -37,7 +37,7 @@
         <div class="card-icon">🔴</div>
         <div class="card-body">
           <div class="card-value">{{ summary?.totalErrors | number }}</div>
-          <div class="card-label">Total Errors</div>
+          <div class="card-label">Errors (D-1)</div>
         </div>
         <div class="card-sparkline">
           <div class="sparkline-bar" style="height: 60%"></div>
@@ -52,7 +52,7 @@
         <div class="card-icon">💀</div>
         <div class="card-body">
           <div class="card-value">{{ summary?.totalFatals | number }}</div>
-          <div class="card-label">Fatal Errors</div>
+          <div class="card-label">Fatals (D-1)</div>
         </div>
         <div class="trend-badge" [class]="getTrendClass()">
           {{ getTrendIcon() }} 24h trend
@@ -63,16 +63,16 @@
         <div class="card-icon">🧩</div>
         <div class="card-body">
           <div class="card-value">{{ summary?.totalApplications }}</div>
-          <div class="card-label">Applications</div>
+          <div class="card-label">Apps (D-1)</div>
         </div>
-        <div class="card-sub">Monitored services</div>
+        <div class="card-sub">Active services</div>
       </div>
 
       <div class="card metric-card card-servers">
         <div class="card-icon">🖥️</div>
         <div class="card-body">
           <div class="card-value">{{ summary?.totalServers }}</div>
-          <div class="card-label">Servers</div>
+          <div class="card-label">Servers (D-1)</div>
         </div>
         <div class="card-sub">Active hosts</div>
       </div>
@@ -81,9 +81,93 @@
         <div class="card-icon">📅</div>
         <div class="card-body">
           <div class="card-value">{{ summary?.errorsLast24Hours | number }}</div>
-          <div class="card-label">Last 24 Hours</div>
+          <div class="card-label">Total Logs (D-1)</div>
         </div>
-        <div class="card-sub">{{ summary?.errorsLast7Days | number }} last 2 days</div>
+      </div>
+    </section>
+
+    <!-- System Pipeline Explorer Section -->
+    <section class="card pipeline-card">
+      <div class="chart-header">
+        <div class="pipeline-header-title">
+          <h3>Backend Processing Pipeline</h3>
+          <span class="live-indicator" [class.active]="isPlayingPipeline">
+            <span class="indicator-dot"></span>
+            {{ isPlayingPipeline ? 'Running Live' : 'Simulation Paused' }}
+          </span>
+        </div>
+        <div class="pipeline-controls">
+          <button class="btn-play-pause" (click)="togglePipelinePlay()">
+            {{ isPlayingPipeline ? '⏸ Pause Autoplay' : '▶ Resume Autoplay' }}
+          </button>
+          <span class="chart-badge pipeline-badge">System Workflow Explorer</span>
+        </div>
+      </div>
+      
+      <!-- Stepper Progress Header -->
+      <div class="pipeline-stepper">
+        <div class="stepper-progress-bg"></div>
+        <div class="stepper-progress-line" [style.width.%]="selectedPipelineStep * 25"></div>
+        <div class="step-indicator" 
+             *ngFor="let step of pipelineSteps; let idx = index"
+             [class.active]="selectedPipelineStep === idx"
+             (click)="selectStep(idx)">
+          <div class="step-icon-circle">
+            <span class="step-emoji">{{ step.icon }}</span>
+          </div>
+          <div class="step-label">
+            <span class="step-number">Step 0{{ idx + 1 }}</span>
+            <span class="step-title-text">{{ step.title }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stepper Active Detail Box -->
+      <div class="pipeline-detail-grid" *ngIf="pipelineSteps[selectedPipelineStep] as activeStep">
+        <!-- Text details -->
+        <div class="detail-info">
+          <div class="detail-meta">
+            <span class="step-context-badge">{{ activeStep.badge }}</span>
+            <span class="step-subtitle-text">{{ activeStep.subtitle }}</span>
+          </div>
+          
+          <h4 class="step-display-title">
+            {{ activeStep.icon }} {{ activeStep.title }}
+          </h4>
+          
+          <p class="step-description">{{ activeStep.desc }}</p>
+          <p class="step-details-text">{{ activeStep.details }}</p>
+
+          <div class="code-pointer">
+            <span class="pointer-label">Code Reference:</span>
+            <a [href]="activeStep.locationLink" class="pointer-link" target="_blank">
+              📁 <code>{{ activeStep.location }}</code>
+            </a>
+          </div>
+        </div>
+
+        <!-- Live I/O Data Simulator -->
+        <div class="detail-simulator">
+          <div class="simulator-header">
+            <span class="sim-pulse"></span> Data Flow Simulation
+          </div>
+          <div class="simulator-body">
+            <div class="sim-block">
+              <span class="sim-label">{{ activeStep.inputLabel }}</span>
+              <pre class="sim-code"><code>{{ activeStep.inputText }}</code></pre>
+            </div>
+            
+            <div class="sim-flow-arrow">
+              <span class="arrow-down">▼</span>
+              <span class="arrow-text">Process & Transform</span>
+            </div>
+
+            <div class="sim-block output">
+              <span class="sim-label">{{ activeStep.outputLabel }}</span>
+              <pre class="sim-code"><code>{{ activeStep.outputText }}</code></pre>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 

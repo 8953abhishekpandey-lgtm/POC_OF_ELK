@@ -31,17 +31,20 @@ namespace ELKMonitor.API.Dashboard
         private readonly IDataFetchingAgent       _dataAgent;
         private readonly ICategorizationAgent     _categorizationAgent;
         private readonly ISubCategorizationAgent  _subCategorizationAgent;
+        private readonly DashboardWindowConfig    _windowConfig;
         private readonly ILogger<DashboardService> _logger;
 
         public DashboardService(
             IDataFetchingAgent dataAgent,
             ICategorizationAgent categorizationAgent,
             ISubCategorizationAgent subCategorizationAgent,
+            DashboardWindowConfig windowConfig,
             ILogger<DashboardService> logger)
         {
             _dataAgent              = dataAgent;
             _categorizationAgent    = categorizationAgent;
             _subCategorizationAgent = subCategorizationAgent;
+            _windowConfig           = windowConfig;
             _logger                 = logger;
         }
 
@@ -49,8 +52,19 @@ namespace ELKMonitor.API.Dashboard
         {
             try
             {
-                var f   = Eff(filter);
                 var now = DateTime.UtcNow;
+                filter ??= new LogFilterDto();
+                if (filter.DateFrom == null && filter.DateTo == null)
+                {
+                    filter.DateFrom = now.AddDays(-_windowConfig.WindowDays);
+                    filter.DateTo = now;
+                }
+                else if (filter.DateTo == null)
+                {
+                    filter.DateTo = now;
+                }
+
+                var f   = Eff(filter);
 
                 // Fire all ES count queries in parallel
                 var totalErrorsTask = _dataAgent.CountAsync(Eff(f, severity: "ERROR"));
@@ -133,6 +147,18 @@ namespace ELKMonitor.API.Dashboard
         {
             try
             {
+                var now = DateTime.UtcNow;
+                filter ??= new LogFilterDto();
+                if (filter.DateFrom == null && filter.DateTo == null)
+                {
+                    filter.DateFrom = now.AddDays(-_windowConfig.WindowDays);
+                    filter.DateTo = now;
+                }
+                else if (filter.DateTo == null)
+                {
+                    filter.DateTo = now;
+                }
+
                 var f    = Eff(filter);
                 var logs = ApplyCategoryFilter(await FetchNormalizedAsync(f, SampleSize), f.Category);
 
@@ -159,7 +185,9 @@ namespace ELKMonitor.API.Dashboard
             var docs = await _dataAgent.FetchLogsAsync(filter, size);
             if (docs == null || docs.Count == 0) return new List<NormalizedLog>();
 
-            var inputs = docs.Select(doc => {
+            var groupedDocs = Helpers.LogGroupingHelper.GroupLogDocuments(docs);
+
+            var inputs = groupedDocs.Select(doc => {
                 var appName = ToFriendlyApplicationName(doc.AppName ?? "Unknown");
                 return new ClassifyLogInput
                 {
@@ -174,9 +202,9 @@ namespace ELKMonitor.API.Dashboard
             var classifications = await _categorizationAgent.ClassifyBulkAsync(inputs);
 
             var normalizedLogs = new List<NormalizedLog>();
-            for (int i = 0; i < docs.Count; i++)
+            for (int i = 0; i < groupedDocs.Count; i++)
             {
-                var doc = docs[i];
+                var doc = groupedDocs[i];
                 var input = inputs[i];
                 var (category, subcategory) = classifications[i];
 

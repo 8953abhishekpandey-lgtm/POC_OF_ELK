@@ -9,6 +9,7 @@ namespace ELKMonitor.API.Agents.CategorizationAgent
     ///   • Accept the raw log fields (message, exception type, stack trace, severity)
     ///   • Apply priority-ordered rules or dynamic LLM matching to assign the log to ONE of the 6 error categories (A–F)
     ///   • Return the matched <see cref="ErrorCategory"/> and the matched subcategory label
+    ///   • For FATAL logs: query GitLab Duo AI for a code-fix suggestion (on-demand for ERROR)
     /// </summary>
     public class ClassifyLogInput
     {
@@ -37,3 +38,4 @@ namespace ELKMonitor.API.Agents.CategorizationAgent
         Task<List<(string Category, string Subcategory)>> ClassifyBulkAsync(List<ClassifyLogInput> logs);
     }
 }
+

@@ -23,6 +23,7 @@ services:
       - Elasticsearch__IndexPattern=${ELASTICSEARCH_INDEX_PATTERN:-filebeat-*-error,logs-mock-*}
       - Elasticsearch__VerifySsl=${ELASTICSEARCH_VERIFY_SSL:-false}
       - Elasticsearch__RequestTimeoutSeconds=${ELASTICSEARCH_REQUEST_TIMEOUT_SECONDS:-30}
+      - DASHBOARD_WINDOW_DAYS=${DASHBOARD_WINDOW_DAYS:-1}
     ports:
       - "5000:8080"
     depends_on:

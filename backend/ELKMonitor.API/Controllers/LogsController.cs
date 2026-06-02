@@ -1,4 +1,5 @@
 using ELKMonitor.API.Agents.DataFetchingAgent;
+using ELKMonitor.API.Agents.CategorizationAgent;
 using ELKMonitor.API.DTOs;
 using ELKMonitor.API.Models;
 using ELKMonitor.API.Services;
@@ -12,18 +13,21 @@ namespace ELKMonitor.API.Controllers
     [Produces("application/json")]
     public class LogsController : ControllerBase
     {
-        private readonly ILogService _logService;
-        private readonly IDataFetchingAgent _dataAgent;
-        private readonly ILogger<LogsController> _logger;
+        private readonly ILogService              _logService;
+        private readonly IDataFetchingAgent       _dataAgent;
+        private readonly ICategorizationAgent     _categorizationAgent;
+        private readonly ILogger<LogsController>  _logger;
 
         public LogsController(
             ILogService logService,
             IDataFetchingAgent dataAgent,
+            ICategorizationAgent categorizationAgent,
             ILogger<LogsController> logger)
         {
-            _logService = logService;
-            _dataAgent = dataAgent;
-            _logger = logger;
+            _logService              = logService;
+            _dataAgent               = dataAgent;
+            _categorizationAgent     = categorizationAgent;
+            _logger                  = logger;
         }
 
         /// <summary>Fetch ERROR and FATAL logs with optional filters.</summary>
@@ -33,36 +37,36 @@ namespace ELKMonitor.API.Controllers
         {
             try
             {
-                _logger.LogInformation("GetLogs API called: AppName={AppName}, ServerName={ServerName}, Category={Category}, ExceptionType={ExceptionType}, SearchText={SearchText}", 
+                _logger.LogInformation("GetLogs called: App={App} Server={Srv} Cat={Cat} Exc={Exc} Search={Search}",
                     filter.ApplicationName, filter.ServerName, filter.Category, filter.ExceptionType, filter.SearchText);
                 var result = await _logService.GetLogsAsync(filter);
                 var dtos = result.Items.Select(log => new LogResponseDto
                 {
-                    Id = log.Id,
-                    Timestamp = log.Timestamp,
-                    ServerName = log.ServerName,
-                    ApplicationName = log.ApplicationName,
-                    Severity = log.Severity,
-                    ErrorMessage = log.ErrorMessage,
-                    ExceptionType = log.ExceptionType,
-                    StackTrace = log.StackTrace,
-                    CategoryCode = log.CategoryCode,
-                    Category = log.Category,
-                    CategoryColor = GetCategoryColor(log.Category),
-                    Subcategory = log.Subcategory,
-                    ErrorSignature = log.ErrorSignature,
+                    Id                = log.Id,
+                    Timestamp         = log.Timestamp,
+                    ServerName        = log.ServerName,
+                    ApplicationName   = log.ApplicationName,
+                    Severity          = log.Severity,
+                    ErrorMessage      = log.ErrorMessage,
+                    ExceptionType     = log.ExceptionType,
+                    StackTrace        = log.StackTrace,
+                    CategoryCode      = log.CategoryCode,
+                    Category          = log.Category,
+                    CategoryColor     = GetCategoryColor(log.Category),
+                    Subcategory       = log.Subcategory,
+                    ErrorSignature    = log.ErrorSignature,
                     NormalizedMessage = log.NormalizedMessage,
-                    Environment = log.Environment,
-                    Logger = log.Logger,
-                    LogFilePath = log.LogFilePath,
-                    SourceIndex = log.SourceIndex
+                    Environment       = log.Environment,
+                    Logger            = log.Logger,
+                    LogFilePath       = log.LogFilePath,
+                    SourceIndex       = log.SourceIndex
                 }).ToList();
 
                 return Ok(new PagedResult<LogResponseDto>
                 {
-                    Items = dtos,
-                    Total = result.Total,
-                    Page = result.Page,
+                    Items    = dtos,
+                    Total    = result.Total,
+                    Page     = result.Page,
                     PageSize = result.PageSize
                 });
             }
@@ -89,8 +93,8 @@ namespace ELKMonitor.API.Controllers
             => Ok(await _logService.GetExceptionTypesAsync());
 
         /// <summary>
-        /// Return the sibling log lines from the same Filebeat file within ±5 seconds.
-        /// This reconstructs the full multi-line SQL / .NET exception that Filebeat split into separate documents.
+        /// Return sibling log lines from the same Filebeat file within +-5 seconds.
+        /// Reconstructs the full multi-line exception that Filebeat split into separate documents.
         /// </summary>
         [HttpGet("context")]
         [ProducesResponseType(typeof(List<LogContextLineDto>), StatusCodes.Status200OK)]
@@ -128,11 +132,8 @@ namespace ELKMonitor.API.Controllers
             }
         }
 
-        /// <summary>
-        /// Strips the log4net/NLog/Serilog header prefix from a raw log message line.
-        /// Pattern: "2026-06-01 15:15:02,310 [1] ERROR BillingDeterminant.DBContext.X - <actual message>"
-        ///           → "<actual message>"
-        /// </summary>
+
+
         private static string CleanLogMessage(string raw)
         {
             if (string.IsNullOrEmpty(raw)) return raw;

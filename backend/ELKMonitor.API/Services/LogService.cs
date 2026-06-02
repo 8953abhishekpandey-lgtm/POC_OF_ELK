@@ -32,17 +32,20 @@ namespace ELKMonitor.API.Services
         private readonly IDataFetchingAgent        _dataAgent;
         private readonly ICategorizationAgent      _categorizationAgent;
         private readonly ISubCategorizationAgent   _subCategorizationAgent;
+        private readonly ELKMonitor.API.Dashboard.DashboardWindowConfig _windowConfig;
         private readonly ILogger<LogService>       _logger;
 
         public LogService(
             IDataFetchingAgent dataAgent,
             ICategorizationAgent categorizationAgent,
             ISubCategorizationAgent subCategorizationAgent,
+            ELKMonitor.API.Dashboard.DashboardWindowConfig windowConfig,
             ILogger<LogService> logger)
         {
             _dataAgent              = dataAgent;
             _categorizationAgent    = categorizationAgent;
             _subCategorizationAgent = subCategorizationAgent;
+            _windowConfig           = windowConfig;
             _logger                 = logger;
         }
 
@@ -53,38 +56,23 @@ namespace ELKMonitor.API.Services
                 filter.Page     = Math.Max(filter.Page, 1);
                 filter.PageSize = Math.Clamp(filter.PageSize, 1, 200);
 
+                var now = DateTime.UtcNow;
+                if (filter.DateFrom == null && filter.DateTo == null)
+                {
+                    filter.DateFrom = now.AddDays(-_windowConfig.WindowDays);
+                    filter.DateTo = now;
+                }
+                else if (filter.DateTo == null)
+                {
+                    filter.DateTo = now;
+                }
+
                 var hasCategoryFilter = !string.IsNullOrWhiteSpace(filter.Category);
                 var hasExceptionTypeFilter = !string.IsNullOrWhiteSpace(filter.ExceptionType);
 
-                // ── Simple path: no in-memory filters → offset pagination ────────
-                if (!hasCategoryFilter && !hasExceptionTypeFilter)
-                {
-                    var from     = (filter.Page - 1) * filter.PageSize;
-                    var pageFilt = CloneFilter(filter, size: filter.PageSize);
-                    pageFilt.Page     = 1;
-                    pageFilt.PageSize = filter.PageSize;
-
-                    // Use a custom fetch with from offset (DataFetchingAgent exposes FetchLogsAsync from=0,
-                    // so we adjust the filter's DateTo to act as a page cursor or use a small fetch here)
-                    var docs = await _dataAgent.FetchLogsAsync(filter, filter.PageSize);
-                    var normalized = await MapToNormalizedLogsBulkAsync(docs);
-
-                    // We need total separately for pagination metadata
-                    var total = await _dataAgent.CountAsync(filter);
-
-                    return new PagedResult<NormalizedLog>
-                    {
-                        Items    = normalized,
-                        Total    = total,
-                        Page     = filter.Page,
-                        PageSize = filter.PageSize
-                    };
-                }
-
-                // ── In-Memory filter path: time-window walking ──────────────────────
-                // Categories and ExceptionTypes are matched dynamically in-memory; we cannot reliably filter them in ES.
-                // We walk backwards through time, batch by batch, until we have
-                // enough matched documents for the requested page.
+                // ── In-Memory filter & grouping path: time-window walking ───────────
+                // Since we group split logs in-memory and match categories/exception types dynamically,
+                // we walk backwards through time in batches to fetch, group, and paginate logs.
                 const int BatchSize  = 1000;
                 const int MaxBatches = 50;        // up to 50,000 docs scanned
                 var needed           = filter.Page * filter.PageSize;
@@ -94,14 +82,16 @@ namespace ELKMonitor.API.Services
                 for (var batch = 0; batch < MaxBatches; batch++)
                 {
                     var batchFilter = CloneFilter(filter, size: BatchSize, dateTo: windowEnd);
-                    // Clear fields we filter in-memory so ES doesn't restrict by them
                     batchFilter.Category = null;
                     batchFilter.ExceptionType = null;
 
                     var docs = await _dataAgent.FetchLogsAsync(batchFilter, BatchSize);
                     if (docs.Count == 0) break;
 
-                    var normalized = await MapToNormalizedLogsBulkAsync(docs);
+                    // Group split log documents into single cohesive log statements
+                    var groupedDocs = Helpers.LogGroupingHelper.GroupLogDocuments(docs);
+
+                    var normalized = await MapToNormalizedLogsBulkAsync(groupedDocs);
                     
                     var hits = normalized.AsEnumerable();
                     if (hasCategoryFilter)
@@ -115,7 +105,7 @@ namespace ELKMonitor.API.Services
                     
                     matched.AddRange(hits);
 
-                    // Advance window: next batch fetches docs OLDER than the oldest in this batch
+                    // Advance window: next batch fetches docs OLDER than the oldest raw doc in this batch
                     var oldestTs = docs
                         .Select(d => d.Timestamp)
                         .Where(t => t.HasValue)
@@ -130,7 +120,10 @@ namespace ELKMonitor.API.Services
                     if (matched.Count >= needed * 3 || docs.Count < BatchSize) break;
                 }
 
-                var pageItems = matched
+                // Ensure the list is sorted chronologically descending
+                var orderedMatches = matched.OrderByDescending(l => l.Timestamp).ToList();
+
+                var pageItems = orderedMatches
                     .Skip((filter.Page - 1) * filter.PageSize)
                     .Take(filter.PageSize)
                     .ToList();
@@ -138,7 +131,7 @@ namespace ELKMonitor.API.Services
                 return new PagedResult<NormalizedLog>
                 {
                     Items    = pageItems,
-                    Total    = matched.Count,
+                    Total    = orderedMatches.Count,
                     Page     = filter.Page,
                     PageSize = filter.PageSize
                 };
@@ -161,9 +154,12 @@ namespace ELKMonitor.API.Services
             var filter = new LogFilterDto { Page = 1, PageSize = 1000 };
             var docs = await _dataAgent.FetchLogsAsync(filter, 1000);
             
+            // Group documents so exception classes are extracted from reconstructed fields
+            var groupedDocs = Helpers.LogGroupingHelper.GroupLogDocuments(docs);
+            
             var exceptionTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             
-            foreach (var doc in docs)
+            foreach (var doc in groupedDocs)
             {
                 if (!string.IsNullOrEmpty(doc.ExceptionClass))
                 {
