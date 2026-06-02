@@ -24,6 +24,8 @@ namespace ELKMonitor.API.Agents.DataFetchingAgent
         public string? StackTrace { get; set; }
         /// <summary>Original log.file.path from Filebeat — used for context fetching.</summary>
         public string? LogFilePath { get; set; }
+        /// <summary>The name of the Elasticsearch index where this document resides.</summary>
+        public string? SourceIndex { get; set; }
     }
 
     /// <summary>
@@ -61,22 +63,24 @@ namespace ELKMonitor.API.Agents.DataFetchingAgent
             doc.Message = GetStr(r, "message", "msg", "log_message");
 
             // ── Level: try structured fields first, then sniff from message ──
-            doc.Level = GetStr(r, "level", "severity", "log_level", "loglevel");
-            if (string.IsNullOrEmpty(doc.Level) && !string.IsNullOrEmpty(doc.Message))
+            var rawLevel = GetStr(r, "level", "severity", "log_level", "loglevel")?.ToUpperInvariant();
+            if (rawLevel == "ERROR" || rawLevel == "FATAL")
             {
-                if (doc.Message.Contains(" FATAL ", StringComparison.OrdinalIgnoreCase))       doc.Level = "FATAL";
-                else if (doc.Message.Contains(" ERROR ", StringComparison.OrdinalIgnoreCase)
-                      || doc.Message.Contains("Exception:", StringComparison.OrdinalIgnoreCase)) doc.Level = "ERROR";
-                else if (doc.Message.Contains(" WARN ", StringComparison.OrdinalIgnoreCase)
-                      || doc.Message.Contains(" WARNING ", StringComparison.OrdinalIgnoreCase)) doc.Level = "WARN";
-                else if (doc.Message.Contains(" INFO ", StringComparison.OrdinalIgnoreCase))    doc.Level = "INFO";
-                else if (doc.Message.Contains(" DEBUG ", StringComparison.OrdinalIgnoreCase))   doc.Level = "DEBUG";
-                else doc.Level = "ERROR";
+                doc.Level = rawLevel;
             }
-            else if (string.IsNullOrEmpty(doc.Level))
+            else
             {
-                doc.Level = "ERROR";
+                if (!string.IsNullOrEmpty(doc.Message) && doc.Message.Contains(" FATAL ", StringComparison.OrdinalIgnoreCase))
+                {
+                    doc.Level = "FATAL";
+                }
+                else
+                {
+                    doc.Level = "ERROR";
+                }
             }
+
+
 
             // ── Thread & Logger: parse from message brackets when not structured ──
             if (!string.IsNullOrEmpty(doc.Message))
@@ -126,8 +130,34 @@ namespace ELKMonitor.API.Agents.DataFetchingAgent
                     }
                 }
 
+                // ── Dynamic fallback sniffer for well-known exception types ──
+                if (string.IsNullOrEmpty(doc.ExceptionClass))
+                {
+                    if (doc.Message.Contains("keyword not supported", StringComparison.OrdinalIgnoreCase))
+                        doc.ExceptionClass = "System.ArgumentException";
+                    else if (doc.Message.Contains("login failed", StringComparison.OrdinalIgnoreCase) || doc.Message.Contains("deadlock", StringComparison.OrdinalIgnoreCase))
+                        doc.ExceptionClass = "System.Data.SqlClient.SqlException";
+                    else if (doc.Message.Contains("connection string", StringComparison.OrdinalIgnoreCase))
+                        doc.ExceptionClass = "Microsoft.EntityFrameworkCore.DbUpdateException";
+                    else if (doc.Message.Contains("validation", StringComparison.OrdinalIgnoreCase))
+                        doc.ExceptionClass = "System.ComponentModel.DataAnnotations.ValidationException";
+                    else if (doc.Message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase) || doc.Message.Contains("access denied", StringComparison.OrdinalIgnoreCase))
+                        doc.ExceptionClass = "System.UnauthorizedAccessException";
+                }
+
                 if (doc.Message.Contains("   at "))
                     doc.StackTrace = doc.Message;
+                // ── Clean Prefix from Message ─────────────────────────────────────
+                var msgDashIndex = doc.Message.IndexOf(" - ");
+                if (msgDashIndex >= 0 && msgDashIndex < 200)
+                {
+                    var prefix = doc.Message.Substring(0, msgDashIndex);
+                    if ((prefix.Contains('[') && prefix.Contains(']')) || 
+                        prefix.Contains("ERROR") || prefix.Contains("FATAL") || prefix.Contains("INFO") || prefix.Contains("WARN") || prefix.Contains("DEBUG"))
+                    {
+                        doc.Message = doc.Message.Substring(msgDashIndex + 3).TrimStart();
+                    }
+                }
             }
 
             // ── Fallback structured fields for Thread / Logger ──────────────
@@ -175,15 +205,41 @@ namespace ELKMonitor.API.Agents.DataFetchingAgent
 
             if (string.IsNullOrEmpty(doc.AppName) && !string.IsNullOrEmpty(filePath))
             {
-                if      (filePath.Contains("\\BDM\\",          StringComparison.OrdinalIgnoreCase)) doc.AppName = "bdm_app_log";
-                else if (filePath.Contains("\\MDMDashboard\\", StringComparison.OrdinalIgnoreCase)) doc.AppName = "mdmdashboard_log";
-                else if (filePath.Contains("\\DIL\\",          StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    if      (filePath.Contains("REGISTER_DATA",  StringComparison.OrdinalIgnoreCase)) doc.AppName = "dil_app_registerdata_log";
-                    else if (filePath.Contains("SNAPSHOT_DATA",  StringComparison.OrdinalIgnoreCase)) doc.AppName = "dil_app_snapshotdata_log";
-                    else if (filePath.Contains("EVENT_DATA",     StringComparison.OrdinalIgnoreCase)) doc.AppName = "dil_app_eventdata_log";
-                    else if (filePath.Contains("INTERVAL_DATA",  StringComparison.OrdinalIgnoreCase)) doc.AppName = "dil_app_intervaldata_log";
-                    else doc.AppName = "dil_app_log";
+                    // Dynamically extract the folder name containing the log file as the application name fallback
+                    var directory = System.IO.Path.GetDirectoryName(filePath);
+                    if (!string.IsNullOrEmpty(directory))
+                    {
+                        var folderName = System.IO.Path.GetFileName(directory);
+                        
+                        // If the immediate parent folder name is generic (like "logs", "bin", "debug"), look at the grandparent folder name
+                        if (!string.IsNullOrEmpty(folderName) && 
+                            (folderName.Equals("logs", StringComparison.OrdinalIgnoreCase) || 
+                             folderName.Equals("log", StringComparison.OrdinalIgnoreCase) || 
+                             folderName.Equals("bin", StringComparison.OrdinalIgnoreCase) || 
+                             folderName.Equals("debug", StringComparison.OrdinalIgnoreCase) || 
+                             folderName.Equals("release", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            var parentDir = System.IO.Path.GetDirectoryName(directory);
+                            if (!string.IsNullOrEmpty(parentDir))
+                            {
+                                var grandparentName = System.IO.Path.GetFileName(parentDir);
+                                if (!string.IsNullOrEmpty(grandparentName))
+                                {
+                                    doc.AppName = grandparentName.ToLowerInvariant() + "_log";
+                                }
+                            }
+                        }
+                        else if (!string.IsNullOrEmpty(folderName))
+                        {
+                            doc.AppName = folderName.ToLowerInvariant() + "_log";
+                        }
+                    }
+                }
+                catch
+                {
+                    // Fallback gracefully if file path parsing fails
                 }
             }
 
@@ -227,6 +283,17 @@ namespace ELKMonitor.API.Agents.DataFetchingAgent
                 if (el.TryGetProperty(key, out var p) && p.ValueKind == JsonValueKind.String)
                     return p.GetString();
             return null;
+        }
+
+        private static bool IsStackTraceLine(string? message)
+        {
+            if (string.IsNullOrEmpty(message)) return false;
+            var trimmed = message.TrimStart();
+            return trimmed.StartsWith("at ", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("---", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("...", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("caused by:", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("causado por:", StringComparison.OrdinalIgnoreCase);
         }
 
         public override void Write(Utf8JsonWriter writer, LogDocument value, JsonSerializerOptions options)

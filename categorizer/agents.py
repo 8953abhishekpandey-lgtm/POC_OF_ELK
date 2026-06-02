@@ -10,6 +10,7 @@ import websockets
 import numpy as np
 from typing import Optional, Tuple
 
+
 # ── Agent 1: SignatureAgent (Normalizer) ──────────────────────────────────────
 class SignatureAgent:
     def __init__(self):
@@ -54,7 +55,6 @@ class CacheAgent:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # Check for embedding column and add it if missing (database schema migration)
             cursor = conn.cursor()
             cursor.execute("PRAGMA table_info(signature_cache)")
             columns = [col[1] for col in cursor.fetchall()]
@@ -130,10 +130,8 @@ class CacheAgent:
 # ── Agent 4: EmbeddingAgent (fastembed BGE Model) ─────────────────────────────
 class EmbeddingAgent:
     def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
+        # pyrefly: ignore [missing-import]
         from fastembed import TextEmbedding
-        # Use a lightweight CPU-optimized embedding model:
-        # BAAI/bge-small-en-v1.5 produces 384-dimensional vectors.
-        # This is extremely fast and accurate on CPU.
         self.model_name = model_name
         self.model = TextEmbedding(model_name=model_name)
 
@@ -148,13 +146,10 @@ class SemanticCacheAgent:
         self.cache_agent = cache_agent
         self.embedding_agent = embedding_agent
         self.similarity_threshold = similarity_threshold
-        
-        # In-memory arrays for fast cosine similarity scanning
         self.signatures: list[str] = []
         self.categories: list[str] = []
         self.subcategories: list[str] = []
-        self.vectors: Optional[np.ndarray] = None  # 2D numpy array of shape (N, 384)
-        
+        self.vectors: Optional[np.ndarray] = None
         self.load_cache()
 
     def load_cache(self):
@@ -166,7 +161,6 @@ class SemanticCacheAgent:
                 self.subcategories = []
                 self.vectors = None
                 return
-
             self.signatures = [r["signature"] for r in records]
             self.categories = [r["category"] for r in records]
             self.subcategories = [r["subcategory"] for r in records]
@@ -180,59 +174,37 @@ class SemanticCacheAgent:
             self.vectors = None
 
     def search(self, query_text: str, query_vector: Optional[np.ndarray] = None) -> Optional[Tuple[str, str, float]]:
-        """
-        Searches the in-memory semantic cache for the most similar log vector.
-        Returns (category, subcategory, similarity_score) if a match exceeds the threshold.
-        """
         if self.vectors is None or len(self.signatures) == 0:
             return None
-
         try:
             if query_vector is None:
                 query_vector = self.embedding_agent.get_embedding(query_text)
-
             query_norm = np.linalg.norm(query_vector)
             if query_norm == 0:
                 return None
-            
-            # Calculate Cosine Similarities: dot(A, B) / (norm(A) * norm(B))
             dots = np.dot(self.vectors, query_vector)
             norms = np.linalg.norm(self.vectors, axis=1)
-            
-            # Avoid division by zero
             norms[norms == 0] = 1e-9
-            
             similarities = dots / (norms * query_norm)
-            
-            # Find index of max similarity
             best_idx = np.argmax(similarities)
             best_score = float(similarities[best_idx])
-            
             if best_score >= self.similarity_threshold:
                 return self.categories[best_idx], self.subcategories[best_idx], best_score
         except Exception as e:
             print(f"[SemanticCache] Search error: {e}")
-        
         return None
 
     def add(self, signature: str, embedding: np.ndarray, category: str, subcategory: str):
-        """Adds a new vector to the in-memory array and persists it to SQLite."""
         try:
-            # Persist to database
             self.cache_agent.set(signature, category, subcategory, embedding)
-            
-            # Append to in-memory lists
             self.signatures.append(signature)
             self.categories.append(category)
             self.subcategories.append(subcategory)
-            
-            # Append to the vectors numpy array
             reshaped_emb = embedding.reshape(1, -1)
             if self.vectors is None:
                 self.vectors = reshaped_emb
             else:
                 self.vectors = np.vstack([self.vectors, reshaped_emb])
-            
             print(f"[SemanticCache] Added signature '{signature}' to semantic cache (total size: {len(self.signatures)}).")
         except Exception as e:
             print(f"[SemanticCache] Error adding vector: {e}")
@@ -241,18 +213,20 @@ class SemanticCacheAgent:
 # ── Agent 3: DuoClassifierAgent (GitLab GraphQL aiAction) ─────────────────────
 #
 # How this works:
-#   GitLab Duo Chat (browser + IDE) internally uses two GraphQL operations:
+#   GitLab Duo Chat internally uses two GraphQL operations:
 #     1. Mutation  → aiAction(input: { chat: { question: "..." } })
 #        Sends the prompt to GitLab's AI abstraction layer.
 #     2. Subscription → aiCompletionResponse (userId, resourceId, clientSubscriptionId)
 #        Streams the AI's response back over a WebSocket (graphql-ws protocol).
 #
-#   This is the SAME mechanism GitLab Duo Chat uses in the browser.
+#   This uses the SAME mechanism GitLab Duo Chat uses in the browser/IDE.
 #   It works with a Premium PAT that has the `api` or `ai_features` scope.
 #
 #   Endpoint:
 #     GraphQL HTTP  → POST {GITLAB_URL}/api/graphql
 #     GraphQL WS    → wss://{host}/cable  (Action Cable protocol)
+#
+# IMPORTANT: classify() is fully async. Call it with `await duo_agent.classify(...)`.
 #
 class DuoClassifierAgent:
     def __init__(self, gitlab_url: str, gitlab_token: str):
@@ -261,16 +235,17 @@ class DuoClassifierAgent:
         self.use_local_only = False
         self._user_id: Optional[str] = None  # cached after first fetch
 
-    # ── Public entry point ──────────────────────────────────────────────────
-    def classify(self, message: str, exception_type: str, stack_trace: str, severity: str) -> Tuple[str, str]:
+    # ── Public async entry point ─────────────────────────────────────────────
+    async def classify(self, message: str, exception_type: str, stack_trace: str, severity: str) -> Tuple[str, str]:
         """
-        Try GitLab Duo GraphQL → fallback to local regex rules.
+        Try GitLab Duo GraphQL (async, awaitable) → fallback to local regex rules.
+        Must be called with `await`.
         """
         if self.use_local_only or not self.gitlab_token or self.gitlab_token.startswith("<") or len(self.gitlab_token) < 10:
             return self.classify_local(message, exception_type)
 
         try:
-            result = asyncio.run(self._classify_via_graphql(message, exception_type, stack_trace, severity))
+            result = await self._classify_via_graphql(message, exception_type, stack_trace, severity)
             if result:
                 return result
         except Exception as e:
@@ -280,14 +255,8 @@ class DuoClassifierAgent:
 
     # ── Step 1: Get current user's GitLab global ID ─────────────────────────
     def _get_user_id(self) -> Optional[str]:
-        """
-        Fetch the authenticated user's GitLab global ID (gid://gitlab/User/NNN).
-        Required as the resourceId for the aiCompletionResponse subscription.
-        Result is cached after the first call.
-        """
         if self._user_id:
             return self._user_id
-
         query = """
         query {
           currentUser {
@@ -314,16 +283,10 @@ class DuoClassifierAgent:
                 return user_id
         except Exception as e:
             print(f"[DuoClassifier] Failed to fetch currentUser: {e}")
-
         return None
 
     # ── Step 2: Send aiAction mutation (triggers Duo Chat AI processing) ────
     def _send_ai_action(self, question: str, resource_id: str, client_sub_id: str) -> bool:
-        """
-        Send the aiAction GraphQL mutation.
-        This tells GitLab's AI abstraction layer to process the question.
-        The response will arrive asynchronously via the WebSocket subscription.
-        """
         mutation = """
         mutation AiAction($input: AiActionInput!) {
           aiAction(input: $input) {
@@ -367,12 +330,6 @@ class DuoClassifierAgent:
 
     # ── Step 3: Listen for AI response via Action Cable WebSocket ────────────
     async def _listen_for_response(self, user_id: str, resource_id: str, client_sub_id: str, timeout: int = 20) -> Optional[str]:
-        """
-        Connect to GitLab's Action Cable WebSocket and subscribe to
-        aiCompletionResponse to receive the streamed AI response.
-
-        Protocol: graphql-ws over Action Cable (wss://{host}/cable)
-        """
         host = self.gitlab_url.replace("https://", "").replace("http://", "")
         ws_url = f"wss://{host}/cable"
 
@@ -412,13 +369,11 @@ class DuoClassifierAgent:
                 subprotocols=["actioncable-v1-json"],
                 open_timeout=10
             ) as ws:
-                # Action Cable handshake
                 welcome = await asyncio.wait_for(ws.recv(), timeout=5)
                 welcome_data = json.loads(welcome)
                 if welcome_data.get("type") != "welcome":
                     raise RuntimeError(f"Unexpected Action Cable message: {welcome_data}")
 
-                # Subscribe to the AI completion channel
                 subscribe_msg = json.dumps({
                     "command": "subscribe",
                     "identifier": json.dumps({
@@ -427,7 +382,6 @@ class DuoClassifierAgent:
                 })
                 await ws.send(subscribe_msg)
 
-                # Wait for subscription confirmation
                 confirmed = False
                 for _ in range(5):
                     msg = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -439,7 +393,6 @@ class DuoClassifierAgent:
                 if not confirmed:
                     raise RuntimeError("Failed to confirm Action Cable subscription.")
 
-                # Send the GraphQL subscription operation
                 execute_msg = json.dumps({
                     "command": "message",
                     "identifier": json.dumps({"channel": "GraphqlChannel"}),
@@ -451,7 +404,6 @@ class DuoClassifierAgent:
                 })
                 await ws.send(execute_msg)
 
-                # Collect streamed chunks until done or timeout
                 deadline = asyncio.get_event_loop().time() + timeout
                 while asyncio.get_event_loop().time() < deadline:
                     try:
@@ -473,19 +425,16 @@ class DuoClassifierAgent:
                         if chunk_content:
                             full_response.append(chunk_content)
 
-                        # "fullResponse" type signals the final complete chunk
                         if chunk_type == "fullResponse":
                             break
 
                     except asyncio.TimeoutError:
-                        # No new chunk in 3s — check if we received anything
                         if full_response:
                             break
                         continue
 
         except Exception as e:
             if full_response:
-                # Partial response is still usable
                 pass
             else:
                 raise
@@ -496,9 +445,9 @@ class DuoClassifierAgent:
     async def _classify_via_graphql(self, message: str, exception_type: str, stack_trace: str, severity: str) -> Optional[Tuple[str, str]]:
         """
         Full flow:
-          1. Get current user ID
-          2. Send aiAction mutation
-          3. Listen for aiCompletionResponse on WebSocket
+          1. Get current user ID (HTTP, sync)
+          2. Send aiAction mutation (HTTP, sync)
+          3. Listen for aiCompletionResponse on WebSocket (async)
           4. Parse JSON from AI response
         """
         user_id = self._get_user_id()
@@ -506,7 +455,7 @@ class DuoClassifierAgent:
             raise RuntimeError("Could not retrieve GitLab user ID.")
 
         client_sub_id = str(uuid.uuid4())
-        resource_id = user_id  # Use user GID as the resource
+        resource_id = user_id
 
         prompt = f"""You are an expert log categorizer. Analyze this application error and assign it a category and subcategory.
 
@@ -524,21 +473,16 @@ Rules:
 Respond ONLY with this JSON object, no explanation, no markdown:
 {{"category": "CategoryName", "subcategory": "Short 2-3 word label"}}"""
 
-        # Send the mutation
         self._send_ai_action(prompt, resource_id, client_sub_id)
-
-        # Wait for the response via WebSocket
         ai_text = await self._listen_for_response(user_id, resource_id, client_sub_id)
 
         if not ai_text:
             raise ValueError("Empty response from GitLab Duo AI.")
 
-        # Parse the JSON classification result
         data = self._extract_json(ai_text)
         category = data.get("category", "Unclassified").strip()
         subcategory = data.get("subcategory", "Unclassified Error").strip()
 
-        # Sanitize: remove any "Category X - " prefix that might slip through
         category = re.sub(r'^(?i)category\s+[a-z]\s*-\s*', '', category).title()
         if not category or category.lower() == "unclassified":
             category = "Unclassified"
@@ -551,25 +495,50 @@ Respond ONLY with this JSON object, no explanation, no markdown:
         msg_lower = (message or "").lower()
         exc_lower = (exception_type or "").lower()
 
-        # 1. Database Errors
-        if any(x in msg_lower or x in exc_lower for x in ["sql", "database", "connection pool", "deadlock", "postgres", "mysql", "oracle", "dbupdate", "dbcontext", "error number"]):
-            subcat = "Database Connection Failure" if "connect" in msg_lower else "Database Operation Error"
-            return "Database", subcat
+        # 1. Database Errors — most specific first
+        DB_KEYWORDS = [
+            "keyword not supported",  # SqlConnection parsing failure (encrypted/wrong conn string)
+            "connection string",
+            "sql", "database", "connection pool", "deadlock",
+            "postgres", "mysql", "oracle", "dbupdate", "dbcontext",
+            "error number", "login failed", "server was not found",
+            "network-related", "instance-specific"
+        ]
+        if any(x in msg_lower or x in exc_lower for x in DB_KEYWORDS):
+            if "connect" in msg_lower or "login" in msg_lower or "network" in msg_lower or "keyword not supported" in msg_lower:
+                return "Database", "Database Configuration Error"
+            return "Database", "Database Operation Error"
 
         # 2. Authentication / Security Errors
-        if any(x in msg_lower or x in exc_lower for x in ["unauthorized", "unauthenticated", "token", "expired", "jwt", "login", "credentials", "permission", "access denied", "idx10223"]):
+        AUTH_KEYWORDS = [
+            "unauthorized", "unauthenticated", "token", "expired",
+            "jwt", "login", "credentials", "permission", "access denied", "idx10223"
+        ]
+        if any(x in msg_lower or x in exc_lower for x in AUTH_KEYWORDS):
             return "Authentication", "Unauthorized Access"
 
         # 3. Validation Errors
-        if any(x in msg_lower or x in exc_lower for x in ["validation", "invalid", "argumentnull", "nullreference", "bad request", "format", "missing"]):
+        VAL_KEYWORDS = [
+            "validation", "invalid", "argumentnull", "nullreference",
+            "bad request", "format", "missing", "required field"
+        ]
+        if any(x in msg_lower or x in exc_lower for x in VAL_KEYWORDS):
             return "Validation", "Input Validation Error"
 
         # 4. Integration Errors
-        if any(x in msg_lower or x in exc_lower for x in ["http", "api", "rest", "soap", "timeout", "endpoint", "socket", "gateway", "unreachable"]):
+        INT_KEYWORDS = [
+            "http", "api", "rest", "soap", "timeout", "endpoint",
+            "socket", "gateway", "unreachable", "httpclient"
+        ]
+        if any(x in msg_lower or x in exc_lower for x in INT_KEYWORDS):
             return "Integration", "API Integration Error"
 
         # 5. Infrastructure Errors
-        if any(x in msg_lower or x in exc_lower for x in ["out of memory", "disk full", "cpu", "host", "network", "server", "dns", "socketexception"]):
+        INFRA_KEYWORDS = [
+            "out of memory", "disk full", "cpu", "host", "network",
+            "server", "dns", "socketexception"
+        ]
+        if any(x in msg_lower or x in exc_lower for x in INFRA_KEYWORDS):
             return "Infrastructure", "Infrastructure Resource Error"
 
         # 6. Default Fallback

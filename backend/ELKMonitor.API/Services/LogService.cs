@@ -3,6 +3,7 @@ using ELKMonitor.API.Agents.DataFetchingAgent;
 using ELKMonitor.API.Agents.SubCategorizationAgent;
 using ELKMonitor.API.DTOs;
 using ELKMonitor.API.Models;
+using ELKMonitor.API.Helpers;
 
 namespace ELKMonitor.API.Services
 {
@@ -53,9 +54,10 @@ namespace ELKMonitor.API.Services
                 filter.PageSize = Math.Clamp(filter.PageSize, 1, 200);
 
                 var hasCategoryFilter = !string.IsNullOrWhiteSpace(filter.Category);
+                var hasExceptionTypeFilter = !string.IsNullOrWhiteSpace(filter.ExceptionType);
 
-                // ── Simple path: no category filter → offset pagination ────────
-                if (!hasCategoryFilter)
+                // ── Simple path: no in-memory filters → offset pagination ────────
+                if (!hasCategoryFilter && !hasExceptionTypeFilter)
                 {
                     var from     = (filter.Page - 1) * filter.PageSize;
                     var pageFilt = CloneFilter(filter, size: filter.PageSize);
@@ -79,10 +81,10 @@ namespace ELKMonitor.API.Services
                     };
                 }
 
-                // ── Category filter: time-window walking ──────────────────────
-                // Categories are assigned in-memory; we cannot filter them in ES.
+                // ── In-Memory filter path: time-window walking ──────────────────────
+                // Categories and ExceptionTypes are matched dynamically in-memory; we cannot reliably filter them in ES.
                 // We walk backwards through time, batch by batch, until we have
-                // enough category-matched documents for the requested page.
+                // enough matched documents for the requested page.
                 const int BatchSize  = 1000;
                 const int MaxBatches = 50;        // up to 50,000 docs scanned
                 var needed           = filter.Page * filter.PageSize;
@@ -92,12 +94,25 @@ namespace ELKMonitor.API.Services
                 for (var batch = 0; batch < MaxBatches; batch++)
                 {
                     var batchFilter = CloneFilter(filter, size: BatchSize, dateTo: windowEnd);
+                    // Clear fields we filter in-memory so ES doesn't restrict by them
+                    batchFilter.Category = null;
+                    batchFilter.ExceptionType = null;
 
                     var docs = await _dataAgent.FetchLogsAsync(batchFilter, BatchSize);
                     if (docs.Count == 0) break;
 
                     var normalized = await MapToNormalizedLogsBulkAsync(docs);
-                    var hits       = normalized.Where(log => MatchesCategory(log, filter.Category!)).ToList();
+                    
+                    var hits = normalized.AsEnumerable();
+                    if (hasCategoryFilter)
+                    {
+                        hits = hits.Where(log => MatchesCategory(log, filter.Category!));
+                    }
+                    if (hasExceptionTypeFilter)
+                    {
+                        hits = hits.Where(log => MatchesExceptionType(log, filter.ExceptionType!));
+                    }
+                    
                     matched.AddRange(hits);
 
                     // Advance window: next batch fetches docs OLDER than the oldest in this batch
@@ -141,8 +156,40 @@ namespace ELKMonitor.API.Services
         public Task<List<string>> GetServerNamesAsync()
             => _dataAgent.GetDistinctTermsAsync(DataFetchingAgent.ServerKeywordFields);
 
-        public Task<List<string>> GetExceptionTypesAsync()
-            => _dataAgent.GetDistinctTermsAsync(DataFetchingAgent.ExceptionKeywordFields);
+        public async Task<List<string>> GetExceptionTypesAsync()
+        {
+            var filter = new LogFilterDto { Page = 1, PageSize = 1000 };
+            var docs = await _dataAgent.FetchLogsAsync(filter, 1000);
+            
+            var exceptionTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            
+            foreach (var doc in docs)
+            {
+                if (!string.IsNullOrEmpty(doc.ExceptionClass))
+                {
+                    exceptionTypes.Add(doc.ExceptionClass);
+                }
+            }
+            
+            var defaultTypes = new[]
+            {
+                "System.ArgumentException",
+                "System.Data.SqlClient.SqlException",
+                "System.NullReferenceException",
+                "System.UnauthorizedAccessException",
+                "System.TimeoutException",
+                "System.WebException",
+                "System.IO.FileNotFoundException",
+                "Microsoft.EntityFrameworkCore.DbUpdateException"
+            };
+            
+            foreach (var type in defaultTypes)
+            {
+                exceptionTypes.Add(type);
+            }
+            
+            return exceptionTypes.OrderBy(x => x).ToList();
+        }
 
         // ── Private helpers ───────────────────────────────────────────────────
 
@@ -194,7 +241,8 @@ namespace ELKMonitor.API.Services
                     Environment       = doc.EnvName ?? "Unknown",
                     Logger            = doc.Logger  ?? string.Empty,
                     Thread            = doc.Thread  ?? string.Empty,
-                    LogFilePath       = doc.LogFilePath ?? string.Empty
+                    LogFilePath       = doc.LogFilePath ?? string.Empty,
+                    SourceIndex       = doc.SourceIndex ?? string.Empty
                 });
             }
 
@@ -206,6 +254,12 @@ namespace ELKMonitor.API.Services
             var expected = Normalize(category);
             return Normalize(log.CategoryCode).Equals(expected, StringComparison.OrdinalIgnoreCase)
                 || Normalize(log.Category).Equals(expected, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool MatchesExceptionType(NormalizedLog log, string exceptionType)
+        {
+            if (string.IsNullOrWhiteSpace(exceptionType)) return true;
+            return log.ExceptionType.Equals(exceptionType, StringComparison.OrdinalIgnoreCase);
         }
 
         private static string Normalize(string value)

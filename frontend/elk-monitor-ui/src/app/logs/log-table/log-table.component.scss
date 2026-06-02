@@ -635,3 +635,118 @@
   flex: 1;
 }
 
+// ── Root Cause Card ─────────────────────────────────────────────────────────
+.root-cause-card {
+  margin: 1.25rem 0;
+  border-radius: 12px;
+  border: 1.5px solid rgba(251, 146, 60, 0.55);
+  background: linear-gradient(135deg, rgba(251, 146, 60, 0.08), rgba(239, 68, 68, 0.06));
+  overflow: hidden;
+  animation: rcSlideIn 0.35s ease;
+}
+
+@keyframes rcSlideIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.root-cause-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem 1rem;
+  background: rgba(251, 146, 60, 0.12);
+  border-bottom: 1px solid rgba(251, 146, 60, 0.25);
+}
+
+.root-cause-icon { font-size: 1.1rem; }
+
+.root-cause-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #fb923c;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.root-cause-badge {
+  margin-left: auto;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: rgba(251, 146, 60, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 146, 60, 0.3);
+  font-weight: 600;
+}
+
+.root-cause-body {
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.root-cause-location {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.5;
+  word-break: break-all;
+  color: var(--text-primary);
+}
+
+.rcl-namespace {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  font-weight: 400;
+}
+
+.rcl-class {
+  color: #60a5fa;
+  font-weight: 700;
+}
+
+.rcl-method {
+  color: #34d399;
+  font-weight: 700;
+}
+
+.root-cause-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.rc-meta-icon { font-size: 0.95rem; }
+
+.rc-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+
+  strong { color: var(--text-primary); }
+}
+
+.rc-line-num {
+  color: #fb923c !important;
+  font-size: 0.95rem;
+}
+
+.rc-meta-divider {
+  color: var(--border);
+  user-select: none;
+}
+
+.rc-raw-frame {
+  summary {
+    cursor: pointer;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    user-select: none;
+    &:hover { color: var(--text-secondary); }
+  }
+}

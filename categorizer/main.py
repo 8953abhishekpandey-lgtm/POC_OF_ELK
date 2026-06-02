@@ -1,4 +1,5 @@
 import os
+import sqlite3
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from agents import SignatureAgent, CacheAgent, DuoClassifierAgent, EmbeddingAgent, SemanticCacheAgent
@@ -11,6 +12,18 @@ GITLAB_TOKEN = os.getenv("GITLAB_TOKEN", "")
 
 if not GITLAB_TOKEN:
     print("WARNING: GITLAB_TOKEN env variable is missing or empty. GitLab Duo classification calls will fail.")
+
+# ── Wipe stale 'Unclassified' cache entries so they get re-classified by GitLab Duo ──
+try:
+    with sqlite3.connect("categorizer_cache.db") as _conn:
+        _deleted = _conn.execute(
+            "DELETE FROM signature_cache WHERE category = 'Unclassified'"
+        ).rowcount
+        _conn.commit()
+    if _deleted:
+        print(f"[Startup] Cleared {_deleted} stale 'Unclassified' cache entries for re-classification.")
+except Exception:
+    pass  # DB might not exist yet on first boot
 
 # Instantiate agents
 signature_agent = SignatureAgent()
@@ -61,8 +74,8 @@ async def classify_log(req: ClassifyRequest):
             cache_agent.set(sig, cat, subcat, query_emb)
             return ClassifyResponse(category=cat, subcategory=subcat, cached=True)
 
-        # Step 4: Run LLM classification (Agent 3)
-        cat, subcat = duo_agent.classify(
+        # Step 4: Run LLM classification via GitLab Duo GraphQL (Agent 3)
+        cat, subcat = await duo_agent.classify(
             message=req.message,
             exception_type=req.exception_type,
             stack_trace=req.stack_trace,
@@ -134,7 +147,7 @@ async def classify_logs_bulk(req: list[ClassifyRequest]):
             continue
 
         try:
-            cat, subcat = duo_agent.classify(
+            cat, subcat = await duo_agent.classify(
                 message=matching_item.message,
                 exception_type=matching_item.exception_type,
                 stack_trace=matching_item.stack_trace,
@@ -300,19 +313,14 @@ async def test_classify(req: ClassifyRequest):
             "note": f"✅ Semantic cache hit (similarity: {score:.4f}). Reused cached classification."
         }
 
-    # 3. Try GitLab Duo
+    # 3. Try GitLab Duo (awaitable — no asyncio.run() nesting needed)
     try:
         if not duo_agent.use_local_only and duo_agent.gitlab_token and len(duo_agent.gitlab_token) >= 10:
-            import asyncio
-            result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: asyncio.run(duo_agent._classify_via_graphql(
-                    req.message, req.exception_type, req.stack_trace, req.severity
-                ))
+            result = await duo_agent._classify_via_graphql(
+                req.message, req.exception_type, req.stack_trace, req.severity
             )
             if result:
                 cat, subcat = result
-                # Add to SQLite and memory semantic cache
                 semantic_cache_agent.add(sig, query_emb, cat, subcat)
                 elapsed = round(time.time() - start, 4)
                 return {

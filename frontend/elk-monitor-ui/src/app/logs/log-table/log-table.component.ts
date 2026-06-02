@@ -21,9 +21,21 @@ export class LogTableComponent implements OnInit {
 
   // Context viewer state
   contextLines: { timestamp: string; message: string; level: string }[] = [];
+  allContextLines: { timestamp: string; message: string; level: string }[] = [];
+  filterToExactError = true;
   contextLoading = false;
   contextError: string | null = null;
   showContext = false;
+
+  // Root cause extracted from stack trace context lines
+  rootCauseFrame: {
+    namespace: string;
+    className: string;
+    method: string;
+    sourceFile: string;
+    lineNumber: string;
+    fullFrame: string;
+  } | null = null;
 
   filter: LogFilter = {
     page: 1,
@@ -127,15 +139,20 @@ export class LogTableComponent implements OnInit {
 
   openDetail(log: LogEntry): void {
     this.selectedLog = log;
-    this.showContext = false;
+    this.showContext = true;
     this.contextLines = [];
+    this.allContextLines = [];
     this.contextError = null;
+    this.rootCauseFrame = null;
+    this.fetchContext();
   }
 
   closeDetail(): void {
     this.selectedLog = null;
     this.showContext = false;
     this.contextLines = [];
+    this.allContextLines = [];
+    this.rootCauseFrame = null;
   }
 
   fetchContext(): void {
@@ -144,6 +161,7 @@ export class LogTableComponent implements OnInit {
     this.contextLoading = true;
     this.contextError = null;
     this.contextLines = [];
+    this.allContextLines = [];
 
     this.logService.getLogContext(
       this.selectedLog.logFilePath || '',
@@ -151,10 +169,25 @@ export class LogTableComponent implements OnInit {
       this.selectedLog.timestamp
     ).subscribe({
       next: lines => {
-        this.contextLines = lines;
+        // Strip raw exception-header lines ("ExceptionType: message") from
+        // context display — they duplicate what is already shown in Error Message.
+        // We still pass them into the enrichment scan, just don't display them.
+        const displayLines = lines.filter(l => {
+          const m = (l.message || '').trim();
+          // Suppress lines that are ONLY a "SomeException: some message" header
+          // (no file/class/stack context, just the exception class name and message)
+          if (/^[A-Za-z0-9\.]+Exception[^\n]{0,300}$/.test(m) && !m.startsWith('at ') && !m.includes('[')) {
+            return false;
+          }
+          return true;
+        });
+        this.allContextLines = displayLines;
         this.contextLoading = false;
         if (lines.length === 0) {
           this.contextError = 'No adjacent log lines found in the same time window.';
+        } else {
+          this.enrichSelectedLogFromContext(lines); // scan ALL lines including exception headers
+          this.applyContextFilter();
         }
       },
       error: () => {
@@ -162,6 +195,173 @@ export class LogTableComponent implements OnInit {
         this.contextError = 'Failed to load context from server.';
       }
     });
+  }
+
+  applyContextFilter(): void {
+    if (this.filterToExactError) {
+      this.contextLines = this.filterContextLines(this.allContextLines);
+    } else {
+      this.contextLines = this.allContextLines;
+    }
+  }
+
+  private filterContextLines(lines: any[]): any[] {
+    if (!this.selectedLog || lines.length === 0) return lines;
+
+    const targetMsg = this.selectedLog.errorMessage;
+    let clickedIdx = lines.findIndex(l => l.message === targetMsg);
+    
+    if (clickedIdx === -1) {
+      clickedIdx = lines.findIndex(l => targetMsg.includes(l.message));
+    }
+
+    if (clickedIdx === -1) return lines;
+
+    const isNewLogHeader = (msg: string) => {
+      if (!msg) return false;
+      const hasLogPattern = /\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/.test(msg) || /\[\d+\]\s+(INFO|ERROR|WARN|FATAL|DEBUG)/i.test(msg);
+      const isStackTrace = msg.trim().startsWith('at ') || msg.trim().startsWith('---');
+      return hasLogPattern && !isStackTrace;
+    };
+
+    let startIdx = clickedIdx;
+    while (startIdx > 0) {
+      const prevMsg = lines[startIdx].message || '';
+      if (isNewLogHeader(prevMsg)) {
+        break;
+      }
+      
+      const prevLineMsg = lines[startIdx - 1].message || '';
+      if (isNewLogHeader(prevLineMsg)) {
+        startIdx--;
+        break;
+      }
+      
+      startIdx--;
+    }
+
+    let endIdx = clickedIdx;
+    while (endIdx < lines.length - 1) {
+      const nextMsg = lines[endIdx + 1].message || '';
+      if (isNewLogHeader(nextMsg)) {
+        break;
+      }
+      endIdx++;
+    }
+
+    return lines.slice(startIdx, endIdx + 1);
+  }
+
+  private enrichSelectedLogFromContext(lines: any[]): void {
+    if (!this.selectedLog) return;
+
+    // Scan context lines for the actual Exception Type.
+    // Filebeat ships each log4net line separately, so exception class info
+    // often lives in a sibling doc ("System.ArgumentException: Keyword not supported...").
+    let detectedExceptionType = '';
+
+    for (const line of lines) {
+      const msg = (line.message || '').trim();
+      // Match "Some.Namespace.ExceptionClass: message" or just "SomeException"
+      const match = msg.match(/^([A-Za-z0-9\.]+Exception)(?::|\s)/);
+      if (match) {
+        detectedExceptionType = match[1];
+        break;
+      }
+      // Also match inline "threw Some.ExceptionClass" patterns
+      const inlineMatch = msg.match(/([A-Za-z0-9\.]+Exception)/);
+      if (inlineMatch && msg.includes('Exception')) {
+        detectedExceptionType = inlineMatch[1];
+        // Don't break — prefer a line that starts with the exception class
+      }
+    }
+
+    // Always enrich exception type if we found something from context
+    if (detectedExceptionType) {
+      this.selectedLog.exceptionType = detectedExceptionType;
+    }
+
+    // Reconstruct full message and stack trace from matched context group lines
+    const groupLines = this.filterContextLines(lines);
+    if (groupLines && groupLines.length > 0) {
+      // Reconstruct detailed error message (lines that are NOT stack trace lines)
+      const messageLines = groupLines
+        .map(l => l.message || '')
+        .filter(m => {
+          const trimmed = m.trim();
+          return !trimmed.startsWith('at ') && !trimmed.startsWith('---') && !trimmed.startsWith('\tat ');
+        });
+
+      if (messageLines.length > 0) {
+        this.selectedLog.errorMessage = messageLines.join('\n');
+      }
+
+      // Reconstruct stack trace lines
+      const stackLines = groupLines
+        .map(l => l.message || '')
+        .filter(m => {
+          const trimmed = m.trim();
+          return trimmed.startsWith('at ') || trimmed.startsWith('---') || trimmed.startsWith('\tat ');
+        });
+
+      if (stackLines.length > 0) {
+        this.selectedLog.stackTrace = stackLines.join('\n');
+      }
+    }
+
+    // ── Root Cause Extraction ──────────────────────────────────────────────
+    // Scan context lines for stack frame pattern:
+    //   "at Namespace.Class.Method(params) in File.cs:line N"
+    // Skip system/framework frames, pick the FIRST user-code frame.
+    const SYSTEM_PREFIXES = [
+      'System.', 'Microsoft.', 'Newtonsoft.', 'Elastic.',
+      'NpgsqlCommand', 'MySql.', 'Oracle.'
+    ];
+
+    // Regex: matches "   at Fully.Qualified.Method(params) in /path/to/File.cs:line 296"
+    const frameRe = /at\s+([\w\.\+<>]+)\(([^)]*)\)(?:\s+in\s+(.+):line\s+(\d+))?/;
+
+    for (const line of lines) {
+      const raw = line.message || '';
+      const trimmed = raw.trim();
+
+      // Only look at lines that are stack trace frames
+      if (!trimmed.startsWith('at ') && !trimmed.startsWith('   at ')) continue;
+
+      const m = frameRe.exec(trimmed);
+      if (!m) continue;
+
+      const fullMethod = m[1]; // e.g. BillingDeterminant.DBContext.ClsDBMasters.GetMasterData
+      const filePath   = m[3]; // e.g. C:\Users\...\ClsDBMasters.cs
+      const lineNum    = m[4]; // e.g. 296
+
+      // Skip framework/system frames unless there are no user frames at all
+      const isSystem = SYSTEM_PREFIXES.some(p => fullMethod.startsWith(p));
+      if (isSystem) continue;
+
+      // Parse namespace, class, method from the full method name
+      const parts = fullMethod.split('.');
+      const method = parts.pop() || fullMethod;
+      const className = parts.pop() || '';
+      const namespace = parts.join('.');
+
+      // Extract only the file name (not full path)
+      let sourceFile = '';
+      if (filePath) {
+        const slashIdx = Math.max(filePath.lastIndexOf('\\'), filePath.lastIndexOf('/'));
+        sourceFile = slashIdx >= 0 ? filePath.substring(slashIdx + 1) : filePath;
+      }
+
+      this.rootCauseFrame = {
+        namespace,
+        className,
+        method,
+        sourceFile,
+        lineNumber: lineNum || '',
+        fullFrame: trimmed
+      };
+      break; // First user-code frame is the root cause
+    }
   }
 
   toFriendlyAppName(rawName: string): string {

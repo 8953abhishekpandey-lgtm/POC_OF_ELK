@@ -3,6 +3,7 @@ using ELKMonitor.API.DTOs;
 using ELKMonitor.API.Models;
 using ELKMonitor.API.Services;
 using Microsoft.AspNetCore.Mvc;
+using ELKMonitor.API.Helpers;
 
 namespace ELKMonitor.API.Controllers
 {
@@ -53,7 +54,8 @@ namespace ELKMonitor.API.Controllers
                     NormalizedMessage = log.NormalizedMessage,
                     Environment = log.Environment,
                     Logger = log.Logger,
-                    LogFilePath = log.LogFilePath
+                    LogFilePath = log.LogFilePath,
+                    SourceIndex = log.SourceIndex
                 }).ToList();
 
                 return Ok(new PagedResult<LogResponseDto>
@@ -112,7 +114,7 @@ namespace ELKMonitor.API.Controllers
                     .Select(d => new LogContextLineDto
                     {
                         Timestamp = d.Timestamp ?? timestamp,
-                        Message   = d.Message!,
+                        Message   = CleanLogMessage(d.Message!),
                         Level     = d.Level ?? d.Severity ?? "ERROR"
                     })
                     .ToList();
@@ -126,17 +128,39 @@ namespace ELKMonitor.API.Controllers
             }
         }
 
+        /// <summary>
+        /// Strips the log4net/NLog/Serilog header prefix from a raw log message line.
+        /// Pattern: "2026-06-01 15:15:02,310 [1] ERROR BillingDeterminant.DBContext.X - <actual message>"
+        ///           → "<actual message>"
+        /// </summary>
+        private static string CleanLogMessage(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return raw;
+            var dashIdx = raw.IndexOf(" - ");
+            if (dashIdx >= 0 && dashIdx < 200)
+            {
+                var prefix = raw.Substring(0, dashIdx);
+                if ((prefix.Contains('[') && prefix.Contains(']')) ||
+                    prefix.Contains("ERROR") || prefix.Contains("FATAL") ||
+                    prefix.Contains("INFO")  || prefix.Contains("WARN")  || prefix.Contains("DEBUG"))
+                {
+                    return raw.Substring(dashIdx + 3).TrimStart();
+                }
+            }
+            return raw;
+        }
+
         private static string GetCategoryColor(string category)
         {
             return (category?.ToLowerInvariant()) switch
             {
-                "application" => "#6366f1",
-                "database" => "#ef4444",
+                "application"    => "#6366f1",
+                "database"       => "#ef4444",
                 "infrastructure" => "#3b82f6",
                 "authentication" => "#a855f7",
-                "integration" => "#f97316",
-                "validation" => "#14b8a6",
-                _ => "#6b7280"
+                "integration"    => "#f97316",
+                "validation"     => "#14b8a6",
+                _                => "#6b7280"
             };
         }
     }

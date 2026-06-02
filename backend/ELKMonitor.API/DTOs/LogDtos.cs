@@ -36,6 +36,8 @@ namespace ELKMonitor.API.DTOs
         public string Logger { get; set; } = string.Empty;
         /// <summary>Filebeat log.file.path — used to request adjacent context lines.</summary>
         public string LogFilePath { get; set; } = string.Empty;
+        /// <summary>The name of the Elasticsearch index where this document resides.</summary>
+        public string SourceIndex { get; set; } = string.Empty;
     }
 
     /// <summary>One sibling log line returned by the context endpoint.</summary>

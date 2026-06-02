@@ -55,7 +55,7 @@
           <div class="card-label">Fatal Errors</div>
         </div>
         <div class="trend-badge" [class]="getTrendClass()">
-          {{ getTrendIcon() }} 7-day trend
+          {{ getTrendIcon() }} 24h trend
         </div>
       </div>
 
@@ -83,7 +83,7 @@
           <div class="card-value">{{ summary?.errorsLast24Hours | number }}</div>
           <div class="card-label">Last 24 Hours</div>
         </div>
-        <div class="card-sub">{{ summary?.errorsLast7Days | number }} last 7 days</div>
+        <div class="card-sub">{{ summary?.errorsLast7Days | number }} last 2 days</div>
       </div>
     </section>
 

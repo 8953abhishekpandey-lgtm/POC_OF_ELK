@@ -56,8 +56,7 @@ namespace ELKMonitor.API.Dashboard
                 var totalErrorsTask = _dataAgent.CountAsync(Eff(f, severity: "ERROR"));
                 var totalFatalsTask = _dataAgent.CountAsync(Eff(f, severity: "FATAL"));
                 var last24Task      = _dataAgent.CountAsync(Eff(f, dateFrom: now.AddDays(-1),  dateTo: now));
-                var last7Task       = _dataAgent.CountAsync(Eff(f, dateFrom: now.AddDays(-7),  dateTo: now));
-                var prev7Task       = _dataAgent.CountAsync(Eff(f, dateFrom: now.AddDays(-14), dateTo: now.AddDays(-7)));
+                var last2DaysTask   = _dataAgent.CountAsync(Eff(f, dateFrom: now.AddDays(-2),  dateTo: now));
                 var sampleTask      = FetchNormalizedAsync(f, SampleSize);
 
                 var distinctAppsTask = string.IsNullOrWhiteSpace(f.Category)
@@ -69,28 +68,28 @@ namespace ELKMonitor.API.Dashboard
                     : Task.FromResult(new List<string>());
 
                 await Task.WhenAll(totalErrorsTask, totalFatalsTask,
-                                   last24Task, last7Task, prev7Task, sampleTask,
+                                   last24Task, last2DaysTask, sampleTask,
                                    distinctAppsTask, distinctServersTask);
 
                 var sample = ApplyCategoryFilter(await sampleTask, f.Category);
-                var last7  = await last7Task;
-                var prev7  = await prev7Task;
+                var last24 = await last24Task;
+                var last2Days = await last2DaysTask;
+                var prev24 = Math.Max(0, last2Days - last24);
 
                 // If a category is requested, recalculate counts from the in-memory sample
                 if (!string.IsNullOrWhiteSpace(f.Category))
                 {
                     var last24From = now.AddDays(-1);
-                    var last7From  = now.AddDays(-7);
-                    var prev7From  = now.AddDays(-14);
-                    var prev7To    = now.AddDays(-7);
+                    var last2DaysFrom = now.AddDays(-2);
 
                     totalErrorsTask = Task.FromResult(sample.LongCount(l => l.Severity.Equals("ERROR", StringComparison.OrdinalIgnoreCase)));
                     totalFatalsTask = Task.FromResult(sample.LongCount(l => l.Severity.Equals("FATAL", StringComparison.OrdinalIgnoreCase)));
                     last24Task      = Task.FromResult(sample.LongCount(l => l.Timestamp >= last24From && l.Timestamp <= now));
-                    last7Task       = Task.FromResult(sample.LongCount(l => l.Timestamp >= last7From  && l.Timestamp <= now));
-                    prev7Task       = Task.FromResult(sample.LongCount(l => l.Timestamp >= prev7From  && l.Timestamp < prev7To));
-                    last7  = await last7Task;
-                    prev7  = await prev7Task;
+                    last2DaysTask   = Task.FromResult(sample.LongCount(l => l.Timestamp >= last2DaysFrom && l.Timestamp <= now));
+                    
+                    last24 = await last24Task;
+                    last2Days = await last2DaysTask;
+                    prev24 = Math.Max(0, last2Days - last24);
                 }
 
                 return new DashboardSummaryDto
@@ -118,9 +117,9 @@ namespace ELKMonitor.API.Dashboard
                             .Where(v => !string.IsNullOrWhiteSpace(v) && v != "Unknown")
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .Count(),
-                    ErrorsLast24Hours = await last24Task,
-                    ErrorsLast7Days   = last7,
-                    TrendDirection    = GetTrendDirection(last7, prev7)
+                    ErrorsLast24Hours = last24,
+                    ErrorsLast7Days   = last2Days,
+                    TrendDirection    = GetTrendDirection(last24, prev24)
                 };
             }
             catch (Exception ex)

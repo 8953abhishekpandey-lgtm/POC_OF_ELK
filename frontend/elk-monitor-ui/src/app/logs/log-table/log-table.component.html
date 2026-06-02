@@ -67,7 +67,6 @@
             <button type="button" class="btn-quick" (click)="setTimeRange('10h')" title="Last 10 Hours">10h</button>
             <button type="button" class="btn-quick" (click)="setTimeRange('24h')" title="Last 24 Hours">24h</button>
             <button type="button" class="btn-quick" (click)="setTimeRange('2d')" title="Last 2 Days">2d</button>
-            <button type="button" class="btn-quick" (click)="setTimeRange('7d')" title="Last 7 Days">7d</button>
           </div>
         </div>
         <input type="datetime-local" [(ngModel)]="filter.dateTo" id="date-to" />
@@ -220,13 +219,57 @@
             <label>Error Signature</label>
             <span class="detail-value exception-type">{{ selectedLog.errorSignature || '—' }}</span>
           </div>
+          <div class="detail-field" *ngIf="selectedLog.sourceIndex">
+            <label>ELK Source Index</label>
+            <span class="detail-value exception-type">{{ selectedLog.sourceIndex }}</span>
+          </div>
+          <div class="detail-field" *ngIf="selectedLog.logFilePath">
+            <label>Log Source File</label>
+            <span class="detail-value" style="word-break: break-all;" title="{{ selectedLog.logFilePath }}">{{ selectedLog.logFilePath }}</span>
+          </div>
         </div>
 
+        <!-- ─── Root Cause Card (auto-extracted from context stack frames) ─── -->
+        <div class="root-cause-card" *ngIf="rootCauseFrame">
+          <div class="root-cause-header">
+            <span class="root-cause-icon">🎯</span>
+            <span class="root-cause-title">Root Cause — Your Code</span>
+            <span class="root-cause-badge">Auto-detected from stack trace</span>
+          </div>
+          <div class="root-cause-body">
+            <div class="root-cause-location">
+              <span class="rcl-namespace" *ngIf="rootCauseFrame.namespace">{{ rootCauseFrame.namespace }}.</span><span class="rcl-class">{{ rootCauseFrame.className }}</span>.<span class="rcl-method">{{ rootCauseFrame.method }}()</span>
+            </div>
+            <div class="root-cause-meta">
+              <span class="rc-meta-item" *ngIf="rootCauseFrame.sourceFile">
+                <span class="rc-meta-icon">📄</span>
+                <strong>{{ rootCauseFrame.sourceFile }}</strong>
+                <span *ngIf="rootCauseFrame.lineNumber"> — line <strong class="rc-line-num">{{ rootCauseFrame.lineNumber }}</strong></span>
+              </span>
+              <span class="rc-meta-divider" *ngIf="rootCauseFrame.sourceFile && rootCauseFrame.className">|</span>
+              <span class="rc-meta-item">
+                <span class="rc-meta-icon">🏛️</span>
+                Class: <strong>{{ rootCauseFrame.className }}</strong>
+              </span>
+              <span class="rc-meta-divider">|</span>
+              <span class="rc-meta-item">
+                <span class="rc-meta-icon">⚙️</span>
+                Method: <strong>{{ rootCauseFrame.method }}()</strong>
+              </span>
+            </div>
+            <details class="rc-raw-frame">
+              <summary>View raw stack frame</summary>
+              <pre class="code-block" style="margin: 8px 0 0 0; font-size: 11px;">{{ rootCauseFrame.fullFrame }}</pre>
+            </details>
+          </div>
+        </div>
 
         <div class="detail-section">
           <label>Error Message</label>
           <pre class="code-block message-block">{{ selectedLog.errorMessage }}</pre>
         </div>
+
+
 
         <div class="detail-section" *ngIf="selectedLog.normalizedMessage">
           <label>Normalized Message</label>
@@ -237,60 +280,6 @@
           <label>Stack Trace</label>
           <pre class="code-block stacktrace-block">{{ selectedLog.stackTrace }}</pre>
         </div>
-
-        <!-- ─── Full Error Context ─────────────────────────────────────── -->
-        <div class="context-section">
-          <div class="context-header">
-            <div class="context-header-left">
-              <span class="context-icon">🔍</span>
-              <span class="context-title">Full Error Context</span>
-              <span class="context-subtitle">Adjacent log lines from the same file (±5 s)</span>
-            </div>
-            <button
-              class="btn-context"
-              (click)="fetchContext()"
-              [disabled]="contextLoading"
-              id="btn-view-full-context">
-              <span *ngIf="!contextLoading">📋 View Full Error</span>
-              <span *ngIf="contextLoading" class="spinner-inline">⏳ Loading…</span>
-            </button>
-          </div>
-
-          <div *ngIf="showContext">
-            <!-- Loading state -->
-            <div class="context-loading" *ngIf="contextLoading">
-              <div class="loader-ring-sm"></div>
-              <span>Fetching adjacent lines from Elasticsearch…</span>
-            </div>
-
-            <!-- Error state -->
-            <div class="context-info-banner context-info-warn" *ngIf="contextError && !contextLoading">
-              ⚠️ {{ contextError }}
-              <p class="context-hint">
-                This log was shipped by Filebeat one line at a time. If the log file path is not stored
-                in Elasticsearch, context cannot be retrieved here — configure Filebeat multiline settings
-                on the server to permanently fix this.
-              </p>
-            </div>
-
-            <!-- Results -->
-            <div class="context-lines" *ngIf="!contextLoading && contextLines.length > 0">
-              <div class="context-info-banner context-info-ok">
-                ✅ Found {{ contextLines.length }} adjacent lines — this is the <strong>complete error</strong>:
-              </div>
-              <div class="context-line"
-                   *ngFor="let line of contextLines"
-                   [class.context-line-highlight]="line.message === selectedLog!.errorMessage">
-                <span class="context-ts">{{ line.timestamp | date:'HH:mm:ss.SSS' }}</span>
-                <span class="context-badge" [class]="line.level === 'FATAL' ? 'badge-fatal' : 'badge-error'">
-                  {{ line.level }}
-                </span>
-                <span class="context-msg">{{ line.message }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <!-- ───────────────────────────────────────────────────────────── -->
 
       </div>
     </div>

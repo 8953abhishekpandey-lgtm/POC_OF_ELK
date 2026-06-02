@@ -34,6 +34,7 @@ export interface LogEntry {
   environment: string;
   logger: string;
   logFilePath: string;
+  sourceIndex?: string;
 }
 
 export interface PagedResult<T> {

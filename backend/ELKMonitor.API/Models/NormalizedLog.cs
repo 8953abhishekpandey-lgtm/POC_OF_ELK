@@ -23,6 +23,8 @@ namespace ELKMonitor.API.Models
         public string Logger { get; set; } = string.Empty;
         /// <summary>Filebeat log.file.path — used to query sibling lines for context.</summary>
         public string LogFilePath { get; set; } = string.Empty;
+        /// <summary>The Elasticsearch index name where the log is stored.</summary>
+        public string SourceIndex { get; set; } = string.Empty;
         public Dictionary<string, string> AdditionalFields { get; set; } = new();
     }
 }

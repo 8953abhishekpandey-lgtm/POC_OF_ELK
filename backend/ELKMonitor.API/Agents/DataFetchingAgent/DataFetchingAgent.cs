@@ -91,7 +91,16 @@ namespace ELKMonitor.API.Agents.DataFetchingAgent
                 return new List<LogDocument>();
             }
 
-            return response.Documents.ToList();
+            var docs = new List<LogDocument>();
+            foreach (var hit in response.Hits)
+            {
+                if (hit.Source != null)
+                {
+                    hit.Source.SourceIndex = hit.Index;
+                    docs.Add(hit.Source);
+                }
+            }
+            return docs;
         }
 
         /// <inheritdoc/>
@@ -164,8 +173,14 @@ namespace ELKMonitor.API.Agents.DataFetchingAgent
                 filters.Add(fq => fq.Range(r => r.Date(dr =>
                 {
                     dr.Field("@timestamp");
-                    if (filter.DateFrom.HasValue) dr.Gte(filter.DateFrom.Value.ToString("o"));
-                    if (filter.DateTo.HasValue)   dr.Lte(filter.DateTo.Value.ToString("o"));
+                    if (filter.DateFrom.HasValue)
+                    {
+                        dr.Gte(filter.DateFrom.Value.ToString("o"));
+                    }
+                    if (filter.DateTo.HasValue)
+                    {
+                        dr.Lte(filter.DateTo.Value.ToString("o"));
+                    }
                 })));
             }
 
@@ -180,13 +195,6 @@ namespace ELKMonitor.API.Agents.DataFetchingAgent
             {
                 filters.Add(fq => fq.Bool(b => b
                     .Should(BuildExactOrTextClauses(ServerKeywordFields, filter.ServerName!).ToArray())
-                    .MinimumShouldMatch(1)));
-            }
-
-            if (!string.IsNullOrWhiteSpace(filter.ExceptionType))
-            {
-                filters.Add(fq => fq.Bool(b => b
-                    .Should(BuildExactOrTextClauses(ExceptionKeywordFields, filter.ExceptionType!).ToArray())
                     .MinimumShouldMatch(1)));
             }
 
@@ -305,7 +313,16 @@ namespace ELKMonitor.API.Agents.DataFetchingAgent
                 return new List<LogDocument>();
             }
 
-            return response.Documents.ToList();
+            var docs = new List<LogDocument>();
+            foreach (var hit in response.Hits)
+            {
+                if (hit.Source != null)
+                {
+                    hit.Source.SourceIndex = hit.Index;
+                    docs.Add(hit.Source);
+                }
+            }
+            return docs;
         }
     }
 }
